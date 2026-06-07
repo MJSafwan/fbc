@@ -38,17 +38,20 @@ typedef struct {
 
 arena p_arena = {0};
 
+typedef struct {
+    int l;
+    int r;
+} pair;
 
-int is_weak_op(char c) {
-    return c == '+' || c == '-';
-}
-
-int is_strong_op(char c) {
-    return c == '*' || c == '/' || c == '^';
-}
+pair op_bind[127] = {
+    ['+'] = (pair){1, 2},
+    ['-'] = (pair){1, 2},
+    ['*'] = (pair){3, 4},
+    ['/'] = (pair){3, 4}
+};
 
 int is_op(char c) {
-    return is_strong_op(c) || is_weak_op(c);
+    return c == '*' || c == '+' || c == '-' || c == '/';
 }
 
 int is_num(char c) {
@@ -70,7 +73,6 @@ int next_token(tokenizer *tk, token *out) {
             char c = tk->buff[tk->cursor];
             if (isspace(c) == 0) {
                 if (is_num(c) == 1) {
-                    arena_set_frame(&p_arena);
                     s = arena_alloc(&p_arena, tk->len);
                     strncpy(s, tk->buff, tk->len);
                     tk->state = READ_ID;
@@ -102,36 +104,12 @@ int next_token(tokenizer *tk, token *out) {
                 s[tk->cursor] = 0;
                 out->num = atoi(&s[offset]);
                 out->kind = TOK_NUM;
-                arena_pop(&p_arena);
                 return TOK_NUM;
             }
         }
 
         tk->cursor++;
     }
-}
-
-typedef struct p_tree p_tree;
-
-struct p_tree {
-    token val;
-    p_tree *l;
-    p_tree *r;
-};
-
-const char *tok_names[] = {
-    [TOK_INV] = "INV",
-    [TOK_NUM] = "NUM",
-    [TOK_OP]  = "OP",
-    [TOK_LP]  = "LP",
-    [TOK_RP]  = "RP",
-    [TOK_END] = "EOF"
-};
-
-const char *tok_str(int kind) {
-    if (kind >= sizeof(tok_names)/sizeof(char*))
-        return NULL;
-    return tok_names[kind];
 }
 
 int expect(tokenizer tkzer, int kind) {
@@ -145,151 +123,61 @@ void skip(tokenizer *tkzer) {
     next_token(tkzer, &next);
 }
 
-token peek_token(tokenizer tkzer) {
-    token t = {0};
-    next_token(&tkzer, &t);
-    return t;
+token peek(tokenizer tkzer) {
+    token next = {0};
+    next_token(&tkzer, &next);
+    return next;
 }
 
-p_tree *parse_expr(tokenizer *tz);
-
-// T -> N | -N | (E) 
-p_tree *parse_term(tokenizer *tz) {
-    if (!expect(*tz, TOK_NUM)) {
-        if (!expect(*tz, TOK_OP)) {
-            if (!expect(*tz, TOK_LP))
-                return NULL;
-            skip(tz);
-            p_tree *expr = parse_expr(tz);
-            if (expr == NULL)
-                return NULL;
-            if (!expect(*tz, TOK_RP))
-                return NULL;
-            skip(tz);
-            return expr;    
-        }
-        token op = peek_token(*tz);
-        if (op.op_id != '-')
-            return NULL;
-        skip(tz);
-        if (!expect(*tz, TOK_NUM))
-            return NULL;
-
-        token num = {0};
-        next_token(tz, &num);
-
-        p_tree *node = arena_alloc(&p_arena, sizeof(p_tree));
-        p_tree *num_node = arena_alloc(&p_arena, sizeof(p_tree));
-        memset(node, 0, sizeof(p_tree));
-        memset(num_node, 0, sizeof(p_tree));
-        num_node->val = num;
-        node->val = op;
-        node->l = num_node;
-        return node;
-    }
-    token num = {0};
-    next_token(tz, &num);
-    p_tree *node = arena_alloc(&p_arena, sizeof(p_tree));
-    memset(node, 0, sizeof(p_tree));
-    node->val = num;
-    return node;
-}
-
-// F -> T | T.*{[*/^]T}
-p_tree *parse_factor(tokenizer *tz) {
-    p_tree *num1 = parse_term(tz);
-    if (num1 == NULL)
-        return NULL;
-    if (!expect(*tz, TOK_OP))
-        return num1;
-    p_tree *root = arena_alloc(&p_arena, sizeof(p_tree));
-    p_tree *ct = root;
-    memcpy(root, num1, sizeof(p_tree));
-    for (;;) {
-        if (!expect(*tz, TOK_OP)) {
-            return root;
-        }
-        token tok_op = peek_token(*tz);
-        if (is_strong_op(tok_op.op_id)) {
-            skip(tz);
-            p_tree *num2 = parse_term(tz);
-            if (num2 == NULL)
-                return NULL;
-
-            ct->val = tok_op;
-            ct->l = num1;
-            ct->r = num2;
-            ct = num2;
-
-            p_tree *tmp = arena_alloc(&p_arena, sizeof(p_tree));
-            memcpy(tmp, num2, sizeof(p_tree));
-            num1 = tmp;
-        } else {
-            return root;
-        }
-    }
-}
-
-// E -> F|F.*{[+-]F}
-p_tree *parse_expr(tokenizer *tz) {
-    p_tree *num1 = parse_factor(tz);
-    if (num1 == NULL)
-        return NULL;
-    if (!expect(*tz, TOK_OP)) {
-        return num1;
-    }
-    p_tree *root = arena_alloc(&p_arena, sizeof(p_tree));
-    p_tree *ct = root;
-    memcpy(root, num1, sizeof(p_tree));
-    for (;;) {
-        if (!expect(*tz, TOK_OP))
-            return root;
-        token tok_op = peek_token(*tz);
-        if (is_weak_op(tok_op.op_id)) {
-            skip(tz);
-            p_tree *num2 = parse_factor(tz);
-            if (num2 == NULL) {
-                return NULL;
-            }
-
-            ct->val = tok_op;
-            ct->l = num1;
-            ct->r = num2;
-            ct = num2;
-
-            p_tree *tmp = arena_alloc(&p_arena, sizeof(p_tree));
-            memcpy(tmp, num2, sizeof(p_tree));
-            num1 = tmp;
-        } else {
-            return root;
-        }
-    }
-}
-
-int eval(p_tree *root) {
-    assert(root);
-    if (root->l == NULL && root->r == NULL)
-        return root->val.num;
-    if (root->r == NULL)
-       return -eval(root->l); 
-    char op = root->val.op_id;
+int eval(char op, int num1, int num2) {
     switch (op) {
         case '+':
-            return eval(root->l) + eval(root->r);
-        case '-':
-            return eval(root->l) - eval(root->r);
+            return num1 + num2;
         case '*':
-            return eval(root->l) * eval(root->r);
+            return num1 * num2;
+        case '-':
+            return num1 - num2;
         case '/':
-            int r = eval(root->r);
-            if (r != 0)
-                return eval(root->l) / r;
-            return 0;      
-        case '^':
-            return pow(eval(root->l), eval(root->r));
-        default:
-            assert(1);
+            if (num2 != 0)
+                return num1/num2;
+            return 0;
     }
+    return 0;
+}
+
+int parse_expr(tokenizer *tz, int min_b, int *ret) {
+    int num1;
+    if (!expect(*tz, TOK_NUM)) {
+        if (!expect(*tz, TOK_LP))
+            return -1;
+        skip(tz);
+        int err = parse_expr(tz, 0, &num1);
+        if (err < 0)
+            return -1;
+        if (!expect(*tz, TOK_RP))
+            return -1;
+        skip(tz);
+    } else {
+        token tok_num1 = {0};
+        next_token(tz, &tok_num1);
+        num1 = tok_num1.num;
+    }
+
+    for (;;) {
+        if (!expect(*tz, TOK_OP))
+            break;
+        token op = peek(*tz);
+        pair binding = op_bind[op.op_id];
+        if (binding.l < min_b)
+            break;
+        skip(tz);
+        int num2;
+        int err = parse_expr(tz, binding.r, &num2);
+        if (err < 0)
+            return -1;
+        num1 = eval(op.op_id, num1, num2);
+    }
+    *ret = num1;
     return 0;
 }
 
@@ -308,10 +196,14 @@ int main(void) {
         tokenizer tz = {0};
         tz.buff = buff;
         tz.len = bytes_read;
-        p_tree *expr = parse_expr(&tz);
-        if (expr == NULL)
+        int res;
+        int err = parse_expr(&tz, 0, &res);
+        if (err < 0) {
             printf("Syntax error!\n");
-        printf("%d\n", eval(expr));
+            arena_pop(&p_arena);
+            continue;
+        }
+        printf("%d\n", res);
         arena_pop(&p_arena);
     }
     return 0;
