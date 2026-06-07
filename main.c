@@ -3,6 +3,7 @@
 #include <unistd.h>
 #include <string.h>
 #include <ctype.h>
+#include <math.h>
 
 #define ARENA_IMPLEMENTATION
 #include "arena.h"
@@ -31,14 +32,23 @@ typedef struct {
 typedef struct {
     size_t cursor;
     int state;
-    char *buff;
+    const char *buff;
     size_t len;
 } tokenizer;
 
 arena p_arena = {0};
 
+
+int is_weak_op(char c) {
+    return c == '+' || c == '-';
+}
+
+int is_strong_op(char c) {
+    return c == '*' || c == '/' || c == '^';
+}
+
 int is_op(char c) {
-    return c == '+' || c == '*';
+    return is_strong_op(c) || is_weak_op(c);
 }
 
 int is_num(char c) {
@@ -101,189 +111,204 @@ int next_token(tokenizer *tk, token *out) {
     }
 }
 
-void get_tokens(token *ts) {
-    char *buff = arena_alloc(&p_arena, BUFF_CAP);
-    memset(buff, 0, BUFF_CAP);
-    int bytes_read = read(0, buff, BUFF_CAP-1);
-    buff[bytes_read] = 0;
-    bytes_read++;
-    tokenizer tz = {0};
-    tz.buff = buff;
-    tz.len = bytes_read;
-    token t = {0};
-    size_t ts_count = 0;
-
-    while (next_token(&tz, &t) != TOK_END) {
-        if (ts_count >= 256)
-           break;
-       ts[ts_count++] = t; 
-    }
-
-    ts[ts_count] = t; 
-}
-
 typedef struct p_tree p_tree;
 
 struct p_tree {
-    union {
-        int val;
-        char op;
-    };
+    token val;
     p_tree *l;
     p_tree *r;
-    p_tree *parent;
 };
 
-int expect(token t, int tok) {
-    return t.kind == tok;
+const char *tok_names[] = {
+    [TOK_INV] = "INV",
+    [TOK_NUM] = "NUM",
+    [TOK_OP]  = "OP",
+    [TOK_LP]  = "LP",
+    [TOK_RP]  = "RP",
+    [TOK_END] = "EOF"
+};
+
+const char *tok_str(int kind) {
+    if (kind >= sizeof(tok_names)/sizeof(char*))
+        return NULL;
+    return tok_names[kind];
 }
 
-int make_tree(p_tree *root, token *ts) {
-    int scope_max = 32;
-    p_tree **stack = arena_alloc(&p_arena, sizeof(p_tree*) * scope_max);
-    for (size_t i = 1; i < scope_max; ++i) {
-        stack[i] = arena_alloc(&p_arena, sizeof(p_tree));
-        assert(stack[i]);
-    }
-    stack[0] = root;
-    p_tree *ct = root;
-    int scope = 0;
-    for (size_t i = 0; ts[i].kind != TOK_END; ++i) {
-        token t = ts[i];
-        if (t.kind == TOK_NUM) {
-            p_tree *num = arena_alloc(&p_arena, sizeof(p_tree));
-            num->val = t.num;
-            num->parent = ct;
-            ct->l = num;
-        }
-        if (!expect(t, TOK_NUM) && !expect(t, TOK_LP) && i == 0) {
-            fprintf(stderr, "Invalid syntax: expected a number or expression at the beginning of the line\n");
-            return -1;
-        }   
-        if (t.kind == TOK_OP) {
-            token next = ts[i+1];
-            if (!expect(next, TOK_NUM) && !expect(next, TOK_LP)) {
-                fprintf(stderr, "Invalid syntax: Expected a number or expression after operator\n");
-                return -1;
-            }
-            if (i > 0) {
-                if (!expect(ts[i-1], TOK_NUM) && !expect(ts[i-1], TOK_RP)) {
-                    fprintf(stderr, "Invalid syntax: Expected a number or expression before the operator\n");
-                    return -1;
-                } 
-            }
-            p_tree *tr = arena_alloc(&p_arena, sizeof(p_tree));
-            memset(tr, 0, sizeof(p_tree));
-            assert(tr);
-            tr->op = t.op_id;
-            ct->r = tr;
-            tr->parent = ct;
-            ct = tr;
-        }
+int expect(tokenizer tkzer, int kind) {
+    token next = {0};
+    next_token(&tkzer, &next);
+    return kind == next.kind;
+}
 
-        if (t.kind == TOK_LP) {
-            if (scope >= scope_max) {
-                fprintf(stderr, "Maximum nesting reached.\n");
-                return -1;
-            }
-            stack[scope] = ct;
-            scope++;
-            memset(stack[scope], 0, sizeof(p_tree));
-            ct = stack[scope];
+void skip(tokenizer *tkzer) {
+    token next = {0};
+    next_token(tkzer, &next);
+}
+
+token peek_token(tokenizer tkzer) {
+    token t = {0};
+    next_token(&tkzer, &t);
+    return t;
+}
+
+p_tree *parse_expr(tokenizer *tz);
+
+p_tree *parse_term(tokenizer *tz) {
+    if (!expect(*tz, TOK_NUM)) {
+        if (!expect(*tz, TOK_OP)) {
+            if (!expect(*tz, TOK_LP))
+                return NULL;
+            skip(tz);
+            p_tree *expr = parse_expr(tz);
+            if (expr == NULL)
+                return NULL;
+            if (!expect(*tz, TOK_RP))
+                return NULL;
+            skip(tz);
+            return expr;    
         }
-        if (t.kind == TOK_RP) {
-            if (scope == 0) {
-                fprintf(stderr, "Invalid syntax: unballanced parentheses\n");
-                return -1;
-            }
-            scope--;
-            p_tree *st = arena_alloc(&p_arena, sizeof(p_tree));
-            memcpy(st, stack[scope+1], sizeof(p_tree));
-            if (st->l != NULL)
-                st->l->parent = st;
-            if (st->r != NULL)
-                st->r->parent = st;
-            stack[scope]->l = st;
-            ct = stack[scope];
+        token op = peek_token(*tz);
+        if (op.op_id != '-')
+            return NULL;
+        skip(tz);
+        if (!expect(*tz, TOK_NUM))
+            return NULL;
+
+        token num = {0};
+        next_token(tz, &num);
+
+        p_tree *node = arena_alloc(&p_arena, sizeof(p_tree));
+        p_tree *num_node = arena_alloc(&p_arena, sizeof(p_tree));
+        memset(node, 0, sizeof(p_tree));
+        memset(num_node, 0, sizeof(p_tree));
+        num_node->val = num;
+        node->val = op;
+        node->l = num_node;
+        return node;
+    }
+    token num = {0};
+    next_token(tz, &num);
+    p_tree *node = arena_alloc(&p_arena, sizeof(p_tree));
+    memset(node, 0, sizeof(p_tree));
+    node->val = num;
+    return node;
+}
+
+p_tree *parse_factor(tokenizer *tz) {
+    p_tree *num1 = parse_term(tz);
+    if (num1 == NULL)
+        return NULL;
+    if (!expect(*tz, TOK_OP))
+        return num1;
+    p_tree *root = arena_alloc(&p_arena, sizeof(p_tree));
+    p_tree *ct = root;
+    memcpy(root, num1, sizeof(p_tree));
+    for (;;) {
+        if (!expect(*tz, TOK_OP)) {
+            return root;
+        }
+        token tok_op = peek_token(*tz);
+        if (is_strong_op(tok_op.op_id)) {
+            skip(tz);
+            p_tree *num2 = parse_term(tz);
+            if (num2 == NULL)
+                return NULL;
+
+            ct->val = tok_op;
+            ct->l = num1;
+            ct->r = num2;
+            ct = num2;
+
+            p_tree *tmp = arena_alloc(&p_arena, sizeof(p_tree));
+            memcpy(tmp, num2, sizeof(p_tree));
+            num1 = tmp;
+        } else {
+            return root;
         }
     }
-    if (scope != 0) {
-        fprintf(stderr, "Invalid syntax: unballanced parentheses\n");
-        return -1;
+}
+
+p_tree *parse_expr(tokenizer *tz) {
+    p_tree *num1 = parse_factor(tz);
+    if (num1 == NULL)
+        return NULL;
+    if (!expect(*tz, TOK_OP)) {
+        return num1;
+    }
+    p_tree *root = arena_alloc(&p_arena, sizeof(p_tree));
+    p_tree *ct = root;
+    memcpy(root, num1, sizeof(p_tree));
+    for (;;) {
+        if (!expect(*tz, TOK_OP))
+            return root;
+        token tok_op = peek_token(*tz);
+        if (is_weak_op(tok_op.op_id)) {
+            skip(tz);
+            p_tree *num2 = parse_factor(tz);
+            if (num2 == NULL) {
+                return NULL;
+            }
+
+            ct->val = tok_op;
+            ct->l = num1;
+            ct->r = num2;
+            ct = num2;
+
+            p_tree *tmp = arena_alloc(&p_arena, sizeof(p_tree));
+            memcpy(tmp, num2, sizeof(p_tree));
+            num1 = tmp;
+        } else {
+            return root;
+        }
+    }
+}
+
+int eval(p_tree *root) {
+    assert(root);
+    if (root->l == NULL && root->r == NULL)
+        return root->val.num;
+    if (root->r == NULL)
+       return -eval(root->l); 
+    char op = root->val.op_id;
+    switch (op) {
+        case '+':
+            return eval(root->l) + eval(root->r);
+        case '-':
+            return eval(root->l) - eval(root->r);
+        case '*':
+            return eval(root->l) * eval(root->r);
+        case '/':
+            int r = eval(root->r);
+            if (r != 0)
+                return eval(root->l) / r;
+            return 0;      
+        case '^':
+            return pow(eval(root->l), eval(root->r));
+        default:
+            assert(1);
     }
     return 0;
 }
 
-int eval(p_tree *root);
-
-void eval_mult(p_tree *tr) {
-    if (tr->parent == NULL) {
-        return;
-    }
-    p_tree *parent = tr->parent;
-    if (tr->op == '*') {
-        tr->parent->l->val = eval(tr->parent->l) * eval(tr->l); 
-        tr->parent->r = tr->r;
-        tr->parent->l->l = NULL;
-        tr->parent->l->r = NULL;
-        if (tr->r != NULL) {
-            tr->parent->r->parent = parent;
-        }
-    }
-    eval_mult(parent);
-}
-
-void eval_add(p_tree *tr) {
-    if (tr->parent == NULL) {
-        return;
-    }
-    p_tree *parent = tr->parent;
-    if (tr->op == '+') {
-        tr->parent->l->val = eval(tr->parent->l) + eval(tr->l); 
-        tr->parent->r = tr->r;
-        tr->parent->l->l = NULL;
-        tr->parent->l->r = NULL;
-        if (tr->r != NULL) {
-            tr->parent->r->parent = parent;
-        }
-    }
-
-    eval_add(parent);
-}
-
-int eval(p_tree *root) {
-    if (root->l == NULL)
-        return root->val;
-
-    p_tree *t = root;
-    while (t->r != NULL) {
-        t = t->r;
-    }
-
-    eval_mult(t);
-    t = root;
-    while (t->r != NULL) {
-        t = t->r;
-    }
-    eval_add(t);
-    assert(root->r == NULL);
-    return root->l->val;
-}
-
 int main(void) {
     p_arena = arena_init(ARENA_CAP);
+
     for (;;) {
         memset(p_arena.ptr, 0, p_arena.capacity);
         token *ts = arena_alloc(&p_arena, 64 * sizeof(token));
-        get_tokens(ts);
-        
-        p_tree *root = arena_alloc(&p_arena, sizeof(p_tree));
-        memset(root, 0, sizeof(p_tree));
-        
-        if (make_tree(root, ts) < 0)
-            continue;
-        int val = eval(root);
-        printf("%d\n", val);
+
+        char *buff = arena_alloc(&p_arena, BUFF_CAP);
+        memset(buff, 0, BUFF_CAP);
+        int bytes_read = read(0, buff, BUFF_CAP-1);
+        buff[bytes_read] = 0;
+        bytes_read++;
+        tokenizer tz = {0};
+        tz.buff = buff;
+        tz.len = bytes_read;
+        p_tree *expr = parse_expr(&tz);
+        if (expr == NULL)
+            printf("Syntax error!\n");
+        printf("%d\n", eval(expr));
         arena_pop(&p_arena);
     }
     return 0;
