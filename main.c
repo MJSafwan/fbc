@@ -153,6 +153,7 @@ token peek_token(tokenizer tkzer) {
 
 p_tree *parse_expr(tokenizer *tz);
 
+// T -> N | -N | (E) 
 p_tree *parse_term(tokenizer *tz) {
     if (!expect(*tz, TOK_NUM)) {
         if (!expect(*tz, TOK_OP)) {
@@ -194,6 +195,7 @@ p_tree *parse_term(tokenizer *tz) {
     return node;
 }
 
+// F -> T | T.*{[*/^]T}
 p_tree *parse_factor(tokenizer *tz) {
     p_tree *num1 = parse_term(tz);
     if (num1 == NULL)
@@ -228,6 +230,7 @@ p_tree *parse_factor(tokenizer *tz) {
     }
 }
 
+// E -> F|F.*{[+-]F}
 p_tree *parse_expr(tokenizer *tz) {
     p_tree *num1 = parse_factor(tz);
     if (num1 == NULL)
