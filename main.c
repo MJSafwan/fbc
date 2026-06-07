@@ -43,15 +43,22 @@ typedef struct {
     int r;
 } pair;
 
-pair op_bind[127] = {
+pair op_bind[128] = {
     ['+'] = (pair){1, 2},
     ['-'] = (pair){1, 2},
     ['*'] = (pair){3, 4},
-    ['/'] = (pair){3, 4}
+    ['/'] = (pair){3, 4},
+    ['%'] = (pair){3, 4},
+    ['^'] = (pair){3, 5},
+};
+
+pair lop_bind[128] = {
+  ['-'] = (pair){0, 1},  
+  ['~'] = (pair){0, 1},
 };
 
 int is_op(char c) {
-    return c == '*' || c == '+' || c == '-' || c == '/';
+    return op_bind[c].r > 0 || lop_bind[c].r > 0;
 }
 
 int is_num(char c) {
@@ -129,6 +136,17 @@ token peek(tokenizer tkzer) {
     return next;
 }
 
+int leval(char lop, int num) {
+    switch (lop) {
+        case '-':
+            return -num;
+        case '~':
+            return ~num;
+        default:
+            return 0;
+    }
+}
+
 int eval(char op, int num1, int num2) {
     switch (op) {
         case '+':
@@ -141,27 +159,53 @@ int eval(char op, int num1, int num2) {
             if (num2 != 0)
                 return num1/num2;
             return 0;
+        case '^':
+            return pow(num1, num2);
+        case '%':
+            if (num2 > 0)
+                return num1 % num2;
+            return 0;
+        default:
+            return 0;
     }
-    return 0;
 }
 
-int parse_expr(tokenizer *tz, int min_b, int *ret) {
-    int num1;
-    if (!expect(*tz, TOK_NUM)) {
-        if (!expect(*tz, TOK_LP))
-            return -1;
+int parse_expr(tokenizer *tz, int min_b, int *ret);
+
+int parse_pexpr(tokenizer *tz, int min_b, int *ret) {
+    if (expect(*tz, TOK_NUM)) {
+        token num = {0};
+        next_token(tz, &num);
+        *ret = num.num;
+        return 0;
+    } else if(expect(*tz, TOK_LP)) {
         skip(tz);
-        int err = parse_expr(tz, 0, &num1);
+        int err = parse_expr(tz, 0, ret);
         if (err < 0)
             return -1;
         if (!expect(*tz, TOK_RP))
             return -1;
         skip(tz);
-    } else {
-        token tok_num1 = {0};
-        next_token(tz, &tok_num1);
-        num1 = tok_num1.num;
+        return 0;
+    } else if (expect(*tz, TOK_OP)) {
+            token op = {0};
+            next_token(tz, &op);
+            pair binding = lop_bind[op.op_id];
+            if (binding.r == 0)
+                return -1;
+            int err = parse_pexpr(tz, min_b, ret);
+            if (err < 0)
+                return -1;
+            *ret = leval(op.op_id, *ret);
+            return 0;
     }
+    return -1;
+}
+
+int parse_expr(tokenizer *tz, int min_b, int *ret) {
+    int num1;
+    if (parse_pexpr(tz, min_b, &num1) < 0)
+        return -1;
 
     for (;;) {
         if (!expect(*tz, TOK_OP))
