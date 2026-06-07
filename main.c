@@ -50,6 +50,8 @@ pair op_bind[128] = {
     ['/'] = (pair){3, 4},
     ['%'] = (pair){3, 4},
     ['^'] = (pair){3, 5},
+    ['|'] = (pair){1, 2},
+    ['&'] = (pair){3, 4},
 };
 
 pair lop_bind[128] = {
@@ -159,8 +161,12 @@ int eval(char op, int num1, int num2) {
             if (num2 != 0)
                 return num1/num2;
             return 0;
+        case '&':
+            return num1 & num2;
+        case '|':
+            return num1 | num2;
         case '^':
-            return pow(num1, num2);
+            return num1 ^ num2;
         case '%':
             if (num2 > 0)
                 return num1 % num2;
