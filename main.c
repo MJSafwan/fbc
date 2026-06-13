@@ -97,10 +97,12 @@ var_table gvar_table = {0};
 lambda_table glam_table = {0};
 
 pair op_bind[128] = {
-    ['+'] = (pair){1, 2},
-    ['-'] = (pair){1, 2},
+    ['+'] = (pair){2, 3},
+    ['-'] = (pair){2, 3},
     ['%'] = (pair){3, 4},
     ['*'] = (pair){5, 6},
+    ['&'] = (pair){3, 4},
+    ['|'] = (pair){2, 3},
     ['/'] = (pair){5, 6},
 };
 
@@ -354,6 +356,10 @@ double eval_bop(p_tree *root, var_table *table) {
     switch (root->val.op_id) {
         case '+':
             return eval(root->nodes[0], table) + eval(root->nodes[1], table);
+        case '&':
+            return (int)eval(root->nodes[0], table) & (int)eval(root->nodes[1], table);
+        case '|':
+            return (int)eval(root->nodes[0], table) | (int)eval(root->nodes[1], table);
         case '*':
             return eval(root->nodes[0], table) * eval(root->nodes[1], table);
         case '-':
@@ -479,6 +485,103 @@ double eval_func(p_tree *root, var_table *table) {
         int c = rand() % argc;
         /* Lazy eval */
         return eval(argv[c], table);
+    }
+
+    if (strcmp(name, "repeat") == 0) {
+        if (argc != 2)
+            return 0;
+        int times = eval(argv[0], table);
+        int exists = -1;
+        int it = get_var("it", &exists, table);
+        for (int i = 0; i < times; ++i) {
+            assign("it", (double)i, table);
+            eval(argv[1], table);
+        }
+        assign("it", it, table);
+        return times;
+    }
+
+    if (strcmp(name, "compose") == 0) {
+        if (argc == 0)
+            return 0;
+        for (int i = 0; i < argc; ++i) {
+            eval(argv[i], table);
+        }
+        return argc;
+    }
+
+    if (strcmp(name, "eq") == 0) {
+        if (argc != 2)
+            return 0;
+        int val = (eval(argv[0], table) == eval(argv[1], table));
+        return val;
+    }
+
+    if (strcmp(name, "not") == 0) {
+        if (argc != 1)
+            return 0;
+        int val = (eval(argv[0], table));
+        return val == 0 ? 1 : 0;
+    }
+
+    if (strcmp(name, "or") == 0) {
+        if (argc == 1)
+            return 0;
+        for (int i = 0; i < argc; ++i) {
+            if (eval(argv[i], table) != 0)
+                return 1;
+        }
+        return 0;
+    }
+
+    if (strcmp(name, "and") == 0) {
+        if (argc == 1)
+            return 0;
+        for (int i = 0; i < argc; ++i) {
+            if (eval(argv[i], table) == 0)
+                return 0;
+        }
+        return 1;
+    }
+
+    if (strcmp(name, "or") == 0) {
+        if (argc != 1)
+            return 0;
+        int val = (eval(argv[0], table));
+        return val == 0 ? 1 : 0;
+    }
+
+
+    if (strcmp(name, "if") == 0) {
+        if (argc != 3)
+            return 0;
+        int cond = eval(argv[0], table);
+        if (cond != 0) {
+            return eval(argv[1], table);
+        } else {
+            return eval(argv[2], table);
+        }
+    }
+
+    if (strcmp(name, "true") == 0) {
+        return 1;
+    }
+
+    if (strcmp(name, "false") == 0) {
+        return 0;
+    }
+
+    if (strcmp(name, "nan") == 0) {
+        return NAN;
+    }
+
+    if (strcmp(name, "say") == 0) {
+        if (argc == 0)
+            return 0;
+        for (int i = 0; i < argc; ++i) {
+            printf("%f\n", eval(argv[i], table));
+        }
+        return 1;
     }
 
     if (strcmp(name, "rand") == 0) {
@@ -642,8 +745,10 @@ p_tree *parse_pexpr(tokenizer *tz, int min_b, arena *a) {
                 skip(tz);
                 break;
             }
+
             if (!expect(*tz, TOK_COM))
                 return NULL;
+            skip(tz);
             if (!expect(*tz, TOK_ID))
                 return NULL;
             if (argc >= NODE_CAP-1)
@@ -651,6 +756,7 @@ p_tree *parse_pexpr(tokenizer *tz, int min_b, arena *a) {
             next_token(tz, &id1);
             p_tree *t = arena_alloc(&l_arena, sizeof(p_tree));
             t->kind = TREE_VAR;
+            id1.name = strdup(id1.name);
             t->val = id1;
             id->nodes[argc++] = t;
         }
