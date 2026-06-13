@@ -424,7 +424,7 @@ double parse_pexpr(tokenizer *tz, int min_b, double *ret) {
 
         skip(tz);
         int arg_cap = 256;
-        double *argv = malloc(arg_cap * sizeof(int));
+        double *argv = malloc(arg_cap * sizeof(double));
         int argc = 0;
         if (expect(*tz, TOK_RP)) {
             skip(tz);
