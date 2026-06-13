@@ -5,12 +5,14 @@
 #include <ctype.h>
 #include <math.h>
 #include <editline.h>
+#include <time.h>
 
 #define ARENA_IMPLEMENTATION
 #include "arena.h"
 
 #define BUFF_CAP 256
 #define ARENA_CAP (1024*100)
+#define NODE_CAP 16
 
 #define TOK_INV 0
 #define TOK_NUM 1
@@ -21,10 +23,19 @@
 #define TOK_ID 6
 #define TOK_COM 7
 #define TOK_EQ 8
+#define TOK_LAMBDA 9
 
 #define SEEK_CHAR 0
 #define READ_NUM 1
 #define READ_ID 2
+
+#define TREE_NUM 0
+#define TREE_BOP 1
+#define TREE_UOP 2
+#define TREE_FUNC 3
+#define TREE_VAR 4
+#define TREE_ASSIGN 5
+#define TREE_LAMBDA 6
 
 typedef struct {
     int kind;
@@ -42,22 +53,55 @@ typedef struct {
     size_t len;
 } tokenizer;
 
-arena p_arena = {0};
+typedef struct p_tree p_tree;
+
+struct p_tree {
+    int kind;
+    token val;
+    p_tree *nodes[NODE_CAP];     
+};
+
+
+typedef struct {
+    char *name;
+    double val;
+} var_entry;
+
+typedef struct {
+    var_entry *items;
+    size_t count;
+    size_t capacity;
+} var_table;
+
+
+typedef struct {
+    p_tree *lam;
+    p_tree *val;
+} lambda_entry;
+
+typedef struct {
+    lambda_entry *items;
+    size_t count;
+    size_t capacity;
+} lambda_table;
 
 typedef struct {
     int l;
     int r;
 } pair;
 
+arena p_arena = {0};
+arena l_arena = {0};
+
+var_table gvar_table = {0};
+lambda_table glam_table = {0};
+
 pair op_bind[128] = {
     ['+'] = (pair){1, 2},
     ['-'] = (pair){1, 2},
-    ['*'] = (pair){3, 4},
-    ['/'] = (pair){3, 4},
     ['%'] = (pair){3, 4},
-    ['^'] = (pair){3, 5},
-    ['|'] = (pair){1, 2},
-    ['&'] = (pair){3, 4},
+    ['*'] = (pair){5, 6},
+    ['/'] = (pair){5, 6},
 };
 
 pair lop_bind[128] = {
@@ -125,6 +169,12 @@ int next_token(tokenizer *tk, token *out) {
                     out->kind = TOK_EQ;
                     tk->cursor++;
                     return TOK_EQ;
+                }
+
+                if (c == '\\') {
+                    out->kind = TOK_LAMBDA;
+                    tk->cursor++;
+                    return TOK_LAMBDA;
                 }
 
                 if (isalpha(c) == 1) {
@@ -199,103 +249,161 @@ token peek(tokenizer tkzer) {
     return next;
 }
 
-double leval(char lop, double num) {
-    switch (lop) {
-        case '-':
-            return -num;
-        case '~':
-            return ~((int)num);
-        default:
-            return 0;
-    }
-}
 
-double eval(char op, double num1, double num2) {
-    switch (op) {
-        case '+':
-            return num1 + num2;
-        case '*':
-            return num1 * num2;
-        case '-':
-            return num1 - num2;
-        case '/':
-            if (num2 != 0)
-                return num1/num2;
-            return NAN;
-        case '&':
-            return (int)num1 & (int)num2;
-        case '|':
-            return (int)num1 | (int)num2;
-        case '^':
-            return (int)num1 ^ (int)num2;
-        case '%':
-            if (num2 > 0)
-                return fmod(num1, num2);
-            return NAN;
-        default:
-            return 0;
-    }
-}
+double eval(p_tree *root, var_table *table);
 
-double parse_expr(tokenizer *tz, int min_b, double *ret);
-
-typedef struct {
-    char *name;
-    double val;
-} var_entry;
-
-struct {
-    var_entry *items;
-    size_t count;
-    size_t capacity;
-} var_table = {0};
-
-double eval_var(char *name, int *found) {
-    for (int i = 0; i < var_table.count; ++i) {
-        var_entry val = var_table.items[i];
-        if (strcmp(name, val.name) == 0) {
-            *found = i;
-            return val.val;
+double get_var(char *name, int *exists, var_table *table) {
+    for (int i = 0; i < table->count; ++i) {
+        var_entry ent = table->items[i];
+        if (strcmp(name, ent.name) == 0) {
+            *exists = i;
+            return ent.val;
         }
     }
-
-    if (strcmp(name, "clear") == 0) {
-        printf("You are trying to access or assign a variable named 'clear' "\
-               "rather than clearing the screen.\n\n");
-        printf("Did you mean 'clear()'?\n");
-    }
-
-    if (strcmp(name, "exit") == 0) {
-        printf("You are trying to access or assign a variable named 'exit' "\
-               "rather than exiting the program.\n\n");
-        printf("Did you mean 'exit()'?\n");
-    }
-
-    *found = -1;
+    *exists = -1;
     return 0;
 }
 
-double eval_as(char *name, double rval) {
-    int found = 0;
-    eval_var(name, &found);
-    if (found >= 0) {
-        var_table.items[found].val = rval;
-        return rval;
+p_tree *get_lambda(char *name, int *exists) {
+    for (int i = 0; i < glam_table.count; ++i) {
+        lambda_entry ent = glam_table.items[i];
+        if (strcmp(name, ent.lam->val.name) == 0) {
+            *exists = i;
+            return ent.val;
+        }
     }
-
-    if (var_table.count >= var_table.capacity) {
-        var_table.capacity = var_table.capacity == 0 ? 64 : var_table.capacity * 2;
-        var_table.items = realloc(var_table.items, var_table.capacity * sizeof(var_entry));
-        assert(var_table.items);
-    }
-
-    var_table.items[var_table.count].val = rval;
-    var_table.items[var_table.count].name = strdup(name);
-    var_table.count++;
-    return rval;
+    *exists = -1;
+    return NULL;
 }
 
-double eval_func(char *name, int argc, double *argv, int *err) {
+double assign(char *name, double val, var_table *table) {
+    int exists = -1;
+    get_var(name, &exists, table);
+    if (exists >= 0) {
+        table->items[exists].val = val;
+        return val;
+    }
+
+    if (table->count >= table->capacity) {
+        table->capacity = table->capacity == 0 ? 16 : table->capacity * 2;
+        table->items = realloc(table->items, table->capacity * sizeof(var_entry));
+        assert(table->items);
+    }
+
+    table->items[table->count].val = val;
+    table->items[table->count].name = strdup(name);
+    table->count++;
+    return val;
+}
+
+double assign_lamb(p_tree *lambd, p_tree *expr) {
+    int exists = -1;
+    char *name = lambd->val.name;
+    get_lambda(name, &exists);
+    if (exists >= 0) {
+        glam_table.items[exists].val = expr;
+        return 0;
+    }
+
+    if (glam_table.count >= glam_table.capacity) {
+        glam_table.capacity = glam_table.capacity == 0 ? 16 : glam_table.capacity * 2;
+        glam_table.items = realloc(glam_table.items, glam_table.capacity * sizeof(lambda_entry));
+        assert(glam_table.items);
+    }
+
+    glam_table.items[glam_table.count].lam = lambd;
+    glam_table.items[glam_table.count].val = expr;
+    glam_table.count++;
+    return 0;
+}
+
+double eval_assign(p_tree *root, var_table *table) {
+    int kind = root->nodes[0]->kind;
+    if (kind == TREE_VAR) {
+        return assign(root->nodes[0]->val.name, root->nodes[1]->val.num, &gvar_table);    
+    } else {
+        return assign_lamb(root->nodes[0], root->nodes[1]);
+    }
+}
+
+double eval_var(p_tree *root, var_table *table) {
+    int exists = -1;
+    double val = get_var(root->val.name, &exists, table);    
+    if (exists < 0) {
+        if (table != &gvar_table) {
+            val = get_var(root->val.name, &exists, &gvar_table);
+            if (exists < 0)
+                return 0;
+        }
+    }
+    return val;
+}
+
+double eval_uop(p_tree *root, var_table *table) {
+    switch (root->val.op_id) {
+        case '-':
+            return -eval(root->nodes[0], table);
+        case '~':
+            return ~(int)eval(root->nodes[0], table);
+       default:
+            return 0;
+    }
+}
+
+double eval_bop(p_tree *root, var_table *table) {
+    switch (root->val.op_id) {
+        case '+':
+            return eval(root->nodes[0], table) + eval(root->nodes[1], table);
+        case '*':
+            return eval(root->nodes[0], table) * eval(root->nodes[1], table);
+        case '-':
+            return eval(root->nodes[0], table) - eval(root->nodes[1], table);
+        case '/': {
+            double num2 = eval(root->nodes[1], table);
+            if (num2 == 0)
+                return NAN;
+            return eval(root->nodes[0], table) / num2;
+          }
+        case '%': {
+            double num2 = eval(root->nodes[1], table);
+            if (num2 == 0)
+                return NAN;
+            return (int)eval(root->nodes[0], table) % (int)num2;
+          }
+       default:
+                  return 0;
+    }
+}
+
+
+double eval_func(p_tree *root, var_table *table) {
+    int argc = 0;
+    p_tree **argv = root->nodes;
+    for (argc = 0; argv[argc] != NULL; ++argc);
+    char *name = root->val.name;
+
+    int exists = -1;
+    p_tree *ltree = get_lambda(name, &exists);
+
+    if (exists >= 0) {
+        p_tree *vars = glam_table.items[exists].lam;
+        int i = 0;
+        for (i = 0; vars->nodes[i] != NULL; ++i);
+
+        if (i != argc)
+            return NAN;
+
+        var_table ltable = {0};
+
+        for (int i = 0; i < argc; ++i) {
+            assign(vars->nodes[i]->val.name, eval(argv[i], table), &ltable);
+        }
+
+        double val = eval(ltree, &ltable);
+        free(ltable.items);
+        return val;
+    }
+
     /* 'Meta' functions */
 
     if (strcmp(name, "debug") == 0) {
@@ -304,13 +412,12 @@ double eval_func(char *name, int argc, double *argv, int *err) {
         printf("[");
 
         for (int i = 0; i < argc; ++i) {
-            printf("%f", argv[i]);
+            printf("%f", eval(argv[i], table));
             if (i < argc-1)
                 printf(", ");
         }
 
         printf("]\n");
-        *err = 0;
         return argc;    
     } 
 
@@ -322,7 +429,7 @@ double eval_func(char *name, int argc, double *argv, int *err) {
     if (strcmp(name, "exit") == 0) {
         int code = 0;
         if (argc >= 1)
-            code = (int)argv[0];
+            code = (int)eval(argv[0], table);
         exit(code);
         // return code;
     }
@@ -330,157 +437,255 @@ double eval_func(char *name, int argc, double *argv, int *err) {
     /* Math functions */
     if (strcmp(name, "sin") == 0) {
         if (argc != 1) {
-            *err = -1;
-            return 0;
+            return NAN;
         }
-        return sinf(argv[0]);
+        return sinf(eval(argv[0], table));
     }
 
     if (strcmp(name, "cos") == 0) {
         if (argc != 1) {
-            *err = -1;
-            return 0;
+            return NAN;
         }
-        return cosf(argv[0]);
+        return cosf(eval(argv[0], table));
     }
 
     if (strcmp(name, "pow") == 0) {
         if (argc != 2) {
-            *err = -1;
-            return 0;
+            return NAN;
         }
 
-        return pow(argv[0], argv[1]);
+        return pow(eval(argv[0], table), eval(argv[1], table));
     }
 
     if (strcmp(name, "exp") == 0) {
-        if (argc == 2) {
-            return exp(argv[0]*log(argv[1]));
-        }
-
         if (argc != 1) {
-            *err = -1;
-            return 0;    
+            return NAN; 
         }
-        return exp(argv[0]);
+        return exp(eval(argv[0], table));
     }
 
     if (strcmp(name, "ln") == 0) {
         if (argc != 1) {
-            *err = -1;
-            return 0;
-        }
-        if (argv[0] <= 0)
             return NAN;
-        return log(argv[0]);
+        }
+        return log(eval(argv[0], table));
+    }
+
+    if (strcmp(name, "choice") == 0) {
+        if (argc == 0)
+            return 0;
+        if (argc == 1)
+            return eval(argv[0], table);
+        int c = rand() % argc;
+        /* Lazy eval */
+        return eval(argv[c], table);
+    }
+
+    if (strcmp(name, "rand") == 0) {
+        size_t max = RAND_MAX;
+        if (argc >= 1)
+           max = eval(argv[0], table)+1; 
+        return rand() % max;
     }
 
     if (strcmp(name, "log") == 0) {
         if (argc != 2) {
-            *err = -1;
-            return 0;
+            return NAN;
         }
-        if (argv[0] <= 0)
-            return NAN;
-        if (argv[1] <= 0)
-            return NAN;
-        return log(argv[0])/log(argv[1]);
+        return log(eval(argv[0], table))/log(eval(argv[1], table));
     }
-    *err = -1;
+
     return 0;
 }
 
-double parse_pexpr(tokenizer *tz, int min_b, double *ret) {
+double eval(p_tree *root, var_table *table) {
+    switch (root->kind) {
+        case TREE_NUM:
+            return root->val.num;
+        case TREE_BOP:
+            return eval_bop(root, table);
+        case TREE_UOP:
+            return eval_uop(root, table);
+        case TREE_FUNC:
+            return eval_func(root, table);
+        case TREE_VAR:
+            return eval_var(root, table);
+        case TREE_ASSIGN:
+            return eval_assign(root, table);
+        default:
+            return 0;
+    }
+    return 0;
+}
+
+p_tree *parse_expr(tokenizer *tz, int min_b, arena *a);
+
+p_tree *parse_pexpr(tokenizer *tz, int min_b, arena *a) {
     if (expect(*tz, TOK_NUM)) {
         token num = {0};
         next_token(tz, &num);
-        *ret = num.num;
-        return 0;
+        p_tree *t = arena_alloc(a, sizeof(p_tree));
+        memset(t, 0, sizeof(p_tree));
+        t->val = num;
+        t->kind = TREE_NUM;
+        return t;
     } else if(expect(*tz, TOK_LP)) {
         skip(tz);
-        int err = parse_expr(tz, 0, ret);
-        if (err < 0)
-            return -1;
+        p_tree *t = parse_expr(tz, 0, a);
+        if (t == NULL)
+            return NULL;
         if (!expect(*tz, TOK_RP))
-            return -1;
+            return NULL;
         skip(tz);
-        return 0;
+        return t;
     } else if (expect(*tz, TOK_OP)) {
-            token op = {0};
-            next_token(tz, &op);
-            pair binding = lop_bind[op.op_id];
+            token tok_op = {0};
+            next_token(tz, &tok_op);
+            pair binding = lop_bind[tok_op.op_id];
             if (binding.r == 0)
-                return -1;
-            int err = parse_pexpr(tz, min_b, ret);
-            if (err < 0)
-                return -1;
-            *ret = leval(op.op_id, *ret);
-            return 0;
+                return NULL;
+            p_tree *t = parse_pexpr(tz, min_b, a);
+            if (t == NULL)
+                return NULL;
+            p_tree *op = arena_alloc(a, sizeof(p_tree));
+            op->kind = TREE_UOP;
+            op->val = tok_op;
+            op->nodes[0] = t;
+            return op;
     } else if (expect(*tz, TOK_ID)) {
         token id = {0};
         next_token(tz, &id);     
+        id.name = strdup(id.name);
+        p_tree *lval = arena_alloc(a, sizeof(p_tree));
+        memset(lval, 0, sizeof(p_tree));
+        lval->val = id;
+        lval->kind = TREE_VAR;
 
         if (!expect(*tz, TOK_LP)) {
             if (expect(*tz, TOK_EQ)) {
-                skip(tz);
-                double rval = 0;
-                if (parse_expr(tz, 0, &rval) < 0)
-                    return -1;
-                *ret = eval_as(id.name, rval);
-                return 0;
+                token tok_eq = {0};
+                next_token(tz, &tok_eq);
+                p_tree *eq = arena_alloc(a, sizeof(p_tree));
+                memset(eq, 0, sizeof(p_tree));
+                p_tree *rval = NULL;
+                if ((rval = (parse_expr(tz, 0, a))) == NULL)
+                    return NULL;
+                eq->nodes[0] = lval;
+                eq->nodes[1] = rval;
+                eq->kind = TREE_ASSIGN;
+                return eq;
             }
-            int found = 0;
-            *ret = eval_var(id.name, &found);
-            return 0;
+            lval->kind = TREE_VAR;
+            return lval;
         }
-
         skip(tz);
-        int arg_cap = 256;
-        double *argv = malloc(arg_cap * sizeof(double));
-        int argc = 0;
+        lval->kind = TREE_FUNC;
+
         if (expect(*tz, TOK_RP)) {
             skip(tz);
-            int err = 0;
-            *ret = eval_func(id.name, argc, argv, &err);
-            return err;
+            return lval;
         }
 
-        if (parse_expr(tz, 0, &argv[argc++]) < 0)
-            return -1;
+        p_tree *arg1 = parse_expr(tz, 0, a);
+        int argc = 0;
+        if (arg1 == NULL)
+            return NULL;
+
+        lval->nodes[argc++] = arg1;
 
         if (expect(*tz, TOK_RP)) {
             skip(tz);
-            int err = 0;
-            *ret = eval_func(id.name, argc, argv, &err);
-            return err;
+            return lval;
         }
 
         for (;;) {
-            if (argc >= arg_cap)
-                return -1;
+            if (argc >= NODE_CAP-1)
+                return NULL;
             if (!expect(*tz, TOK_COM))
-                return -1;
+                return NULL;
             skip(tz);
-            if (parse_expr(tz, 0, &argv[argc++]) < 0)
-                return -1;
+            if ((lval->nodes[argc++] = parse_expr(tz, 0, a)) == NULL)
+                return NULL;
             if (expect(*tz, TOK_RP))
                 break;
         }
-        int err = 0;
-        *ret = eval_func(id.name, argc, argv, &err);
-        return err;
+        lval->nodes[argc] = NULL;
+        return lval;
+    } else if (expect(*tz, TOK_LAMBDA)) {
+        skip(tz);
+        if (!expect(*tz, TOK_ID))
+            return NULL;
+        token tok_id = {0};
+        next_token(tz, &tok_id);
+        tok_id.name = strdup(tok_id.name);
+        if (!expect(*tz, TOK_LP))
+            return NULL;
+        skip(tz);
+
+        p_tree *id = arena_alloc(&l_arena, sizeof(p_tree)); 
+        id->kind = TREE_LAMBDA;
+        id->val = tok_id;
+
+        int argc = 0;
+        token id1 = {0};
+        if (expect(*tz, TOK_ID)) {
+            next_token(tz, &id1);
+            id1.name = strdup(id1.name);
+            p_tree *t = arena_alloc(&l_arena, sizeof(p_tree));
+            t->kind = TREE_VAR;
+            t->val = id1;
+            id->nodes[argc++] = t;
+        }
+        
+        for (;;) {
+            if (expect(*tz, TOK_RP)) {
+                skip(tz);
+                break;
+            }
+            if (!expect(*tz, TOK_COM))
+                return NULL;
+            if (!expect(*tz, TOK_ID))
+                return NULL;
+            if (argc >= NODE_CAP-1)
+                return NULL;
+            next_token(tz, &id1);
+            p_tree *t = arena_alloc(&l_arena, sizeof(p_tree));
+            t->kind = TREE_VAR;
+            t->val = id1;
+            id->nodes[argc++] = t;
+        }
+
+        id->nodes[argc] = NULL;
+
+        if (!expect(*tz, TOK_EQ))
+            return NULL;
+        token eq = {0};
+        next_token(tz, &eq);
+        p_tree *rexpr = parse_expr(tz, 0, &l_arena);
+        if (rexpr == NULL)
+            return NULL;
+        p_tree *as = arena_alloc(&l_arena, sizeof(p_tree));
+        memset(as, 0, sizeof(p_tree));
+        as->kind = TREE_ASSIGN;
+        as->val = eq;
+        as->nodes[0] = id;
+        as->nodes[1] = rexpr;
+        return as;
     }
-    return -1;
+    return NULL;
 }
 
-double parse_expr(tokenizer *tz, int min_b, double *ret) {
-    double num1;
+p_tree *parse_expr(tokenizer *tz, int min_b, arena *a) {
+    p_tree *num1 = NULL;
     token pk = peek(*tz);
     if (pk.kind == TOK_END)
-        return 0;
-    if (parse_pexpr(tz, min_b, &num1) < 0)
-        return -1;
+        return NULL;
+    if ((num1 = parse_pexpr(tz, min_b, a)) == NULL)
+        return NULL;
 
+    p_tree *root = arena_alloc(a, sizeof(p_tree));
+    memcpy(root, num1, sizeof(p_tree));
+    p_tree *ct = root;
     for (;;) {
         if (!expect(*tz, TOK_OP))
             break;
@@ -489,23 +694,28 @@ double parse_expr(tokenizer *tz, int min_b, double *ret) {
         if (binding.l < min_b)
             break;
         skip(tz);
-        double num2;
-        int err = parse_expr(tz, binding.r, &num2);
-        if (err < 0)
-            return -1;
-        num1 = eval(op.op_id, num1, num2);
+        ct->val = op;
+        ct->kind = TREE_BOP;
+        p_tree *num2 = parse_expr(tz, binding.r, a);
+        if (num2 == NULL)
+            return NULL;
+        ct->nodes[0] = num1;
+        ct->nodes[1] = num2;
+        num1 = num2;
+        ct = num2;
     }
-    *ret = num1;
-    return 0;
+    return root;
 }
 
 int main(void) {
     p_arena = arena_init(ARENA_CAP);
+    l_arena = arena_init(ARENA_CAP);
     assert(p_arena.ptr);
 
-    eval_as("PI", M_PI);
-    eval_as("E", M_E);
+    assign("PI", M_PI, &gvar_table);
+    assign("E", M_E, &gvar_table);
 
+    srand(time(NULL));
     for (;;) {
         memset(p_arena.ptr, 0, p_arena.capacity);
         token *ts = arena_alloc(&p_arena, 64 * sizeof(token));
@@ -526,13 +736,15 @@ int main(void) {
         }
 
         double res = 0.0f;
-        int err = parse_expr(&tz, 0, &res);
-        if (err < 0) {
+        p_tree *t = parse_expr(&tz, 0, &p_arena);
+
+        if (t == NULL) {
             printf("Syntax error!\n");
             arena_pop(&p_arena);
             continue;
         }
-        printf("%f\n", res);
+
+        printf("%f\n", eval(t, &gvar_table));
         arena_pop(&p_arena);
     }
     return 0;
