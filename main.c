@@ -170,7 +170,7 @@ int next_token(tokenizer *tk, token *out) {
         if (tk->state == READ_ID) {
             out->kind = TOK_ID;
             char c = tk->buff[tk->cursor];
-            if (!isalpha(c)) {
+            if (!isalnum(c) && c != '_') {
                 s[tk->cursor] = 0;
                 out->name = &s[offset];
                 out->kind = TOK_ID;
@@ -257,6 +257,18 @@ double eval_var(char *name, int *found) {
             *found = i;
             return val.val;
         }
+    }
+
+    if (strcmp(name, "clear") == 0) {
+        printf("You are trying to access or assign a variable named 'clear' "\
+               "rather than clearing the screen.\n\n");
+        printf("Did you mean 'clear()'?\n");
+    }
+
+    if (strcmp(name, "exit") == 0) {
+        printf("You are trying to access or assign a variable named 'exit' "\
+               "rather than exiting the program.\n\n");
+        printf("Did you mean 'exit()'?\n");
     }
 
     *found = -1;
