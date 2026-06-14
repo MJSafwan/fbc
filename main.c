@@ -57,6 +57,7 @@ typedef struct {
     int type;
     union {
         double num;
+        char *str;
     };
 } eval_type;
 
@@ -303,10 +304,8 @@ eval_type eval_assign(p_tree *root, var_table *table) {
 eval_type eval_var(p_tree *root, var_table *table) {
     int exists = -1;
     eval_type val = get_var(root->val.name, &exists, table);    
-    if (exists < 0) {
-        printf("Variable '%s' is undefined.\n", root->val.name);
+    if (exists < 0)
         return NULL_LIT;
-    }
     return val;
 }
 
@@ -432,7 +431,7 @@ eval_type eval_func(p_tree *root, var_table *table) {
             return NULL_LIT; 
 
         eval_type n1 = eval(argv[0], table);
-        if (exp_type(n1, T_NUM))
+        if (!exp_type(n1, T_NUM))
             return NULL_LIT;
         return NUM_LIT(exp(n1.num));
     }
@@ -441,7 +440,7 @@ eval_type eval_func(p_tree *root, var_table *table) {
         if (argc != 1)
             return NULL_LIT; 
         eval_type n1 = eval(argv[0], table);
-        if (exp_type(n1, T_NUM)) 
+        if (!exp_type(n1, T_NUM)) 
             return NULL_LIT;
 
         if (n1.num <= 0) {
