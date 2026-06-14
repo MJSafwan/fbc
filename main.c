@@ -23,7 +23,6 @@
 #define TOK_ID 6
 #define TOK_COM 7
 #define TOK_EQ 8
-#define TOK_LAMBDA 9
 
 #define SEEK_CHAR 0
 #define READ_NUM 1
@@ -35,7 +34,6 @@
 #define TREE_FUNC 3
 #define TREE_VAR 4
 #define TREE_ASSIGN 5
-#define TREE_LAMBDA 6
 
 typedef struct {
     int kind;
@@ -73,28 +71,14 @@ typedef struct {
     size_t capacity;
 } var_table;
 
-
-typedef struct {
-    p_tree *lam;
-    p_tree *val;
-} lambda_entry;
-
-typedef struct {
-    lambda_entry *items;
-    size_t count;
-    size_t capacity;
-} lambda_table;
-
 typedef struct {
     int l;
     int r;
 } pair;
 
 arena p_arena = {0};
-arena l_arena = {0};
 
 var_table gvar_table = {0};
-lambda_table glam_table = {0};
 
 pair op_bind[128] = {
     ['+'] = (pair){2, 3},
@@ -171,12 +155,6 @@ int next_token(tokenizer *tk, token *out) {
                     out->kind = TOK_EQ;
                     tk->cursor++;
                     return TOK_EQ;
-                }
-
-                if (c == '\\') {
-                    out->kind = TOK_LAMBDA;
-                    tk->cursor++;
-                    return TOK_LAMBDA;
                 }
 
                 if (isalpha(c) == 1) {
@@ -266,18 +244,6 @@ double get_var(char *name, int *exists, var_table *table) {
     return 0;
 }
 
-p_tree *get_lambda(char *name, int *exists) {
-    for (int i = 0; i < glam_table.count; ++i) {
-        lambda_entry ent = glam_table.items[i];
-        if (strcmp(name, ent.lam->val.name) == 0) {
-            *exists = i;
-            return ent.val;
-        }
-    }
-    *exists = -1;
-    return NULL;
-}
-
 double assign(char *name, double val, var_table *table) {
     int exists = -1;
     get_var(name, &exists, table);
@@ -298,34 +264,9 @@ double assign(char *name, double val, var_table *table) {
     return val;
 }
 
-double assign_lamb(p_tree *lambd, p_tree *expr) {
-    int exists = -1;
-    char *name = lambd->val.name;
-    get_lambda(name, &exists);
-    if (exists >= 0) {
-        glam_table.items[exists].val = expr;
-        return 0;
-    }
-
-    if (glam_table.count >= glam_table.capacity) {
-        glam_table.capacity = glam_table.capacity == 0 ? 16 : glam_table.capacity * 2;
-        glam_table.items = realloc(glam_table.items, glam_table.capacity * sizeof(lambda_entry));
-        assert(glam_table.items);
-    }
-
-    glam_table.items[glam_table.count].lam = lambd;
-    glam_table.items[glam_table.count].val = expr;
-    glam_table.count++;
-    return 0;
-}
 
 double eval_assign(p_tree *root, var_table *table) {
-    int kind = root->nodes[0]->kind;
-    if (kind == TREE_VAR) {
-        return assign(root->nodes[0]->val.name, root->nodes[1]->val.num, &gvar_table);    
-    } else {
-        return assign_lamb(root->nodes[0], root->nodes[1]);
-    }
+    return assign(root->nodes[0]->val.name, root->nodes[1]->val.num, &gvar_table);    
 }
 
 double eval_var(p_tree *root, var_table *table) {
@@ -387,28 +328,6 @@ double eval_func(p_tree *root, var_table *table) {
     p_tree **argv = root->nodes;
     for (argc = 0; argv[argc] != NULL; ++argc);
     char *name = root->val.name;
-
-    int exists = -1;
-    p_tree *ltree = get_lambda(name, &exists);
-
-    if (exists >= 0) {
-        p_tree *vars = glam_table.items[exists].lam;
-        int i = 0;
-        for (i = 0; vars->nodes[i] != NULL; ++i);
-
-        if (i != argc)
-            return NAN;
-
-        var_table ltable = {0};
-
-        for (int i = 0; i < argc; ++i) {
-            assign(vars->nodes[i]->val.name, eval(argv[i], table), &ltable);
-        }
-
-        double val = eval(ltree, &ltable);
-        free(ltable.items);
-        return val;
-    }
 
     /* 'Meta' functions */
 
@@ -485,94 +404,6 @@ double eval_func(p_tree *root, var_table *table) {
         int c = rand() % argc;
         /* Lazy eval */
         return eval(argv[c], table);
-    }
-
-    if (strcmp(name, "repeat") == 0) {
-        if (argc != 2)
-            return 0;
-        int times = eval(argv[0], table);
-        int exists = -1;
-        int it = get_var("it", &exists, table);
-        for (int i = 0; i < times; ++i) {
-            assign("it", (double)i, table);
-            eval(argv[1], table);
-        }
-        assign("it", it, table);
-        return times;
-    }
-
-    if (strcmp(name, "compose") == 0) {
-        if (argc == 0)
-            return 0;
-        for (int i = 0; i < argc; ++i) {
-            eval(argv[i], table);
-        }
-        return argc;
-    }
-
-    if (strcmp(name, "eq") == 0) {
-        if (argc != 2)
-            return 0;
-        int val = (eval(argv[0], table) == eval(argv[1], table));
-        return val;
-    }
-
-    if (strcmp(name, "not") == 0) {
-        if (argc != 1)
-            return 0;
-        int val = (eval(argv[0], table));
-        return val == 0 ? 1 : 0;
-    }
-
-    if (strcmp(name, "or") == 0) {
-        if (argc == 1)
-            return 0;
-        for (int i = 0; i < argc; ++i) {
-            if (eval(argv[i], table) != 0)
-                return 1;
-        }
-        return 0;
-    }
-
-    if (strcmp(name, "and") == 0) {
-        if (argc == 1)
-            return 0;
-        for (int i = 0; i < argc; ++i) {
-            if (eval(argv[i], table) == 0)
-                return 0;
-        }
-        return 1;
-    }
-
-    if (strcmp(name, "or") == 0) {
-        if (argc != 1)
-            return 0;
-        int val = (eval(argv[0], table));
-        return val == 0 ? 1 : 0;
-    }
-
-
-    if (strcmp(name, "if") == 0) {
-        if (argc != 3)
-            return 0;
-        int cond = eval(argv[0], table);
-        if (cond != 0) {
-            return eval(argv[1], table);
-        } else {
-            return eval(argv[2], table);
-        }
-    }
-
-    if (strcmp(name, "true") == 0) {
-        return 1;
-    }
-
-    if (strcmp(name, "false") == 0) {
-        return 0;
-    }
-
-    if (strcmp(name, "nan") == 0) {
-        return NAN;
     }
 
     if (strcmp(name, "say") == 0) {
@@ -714,70 +545,8 @@ p_tree *parse_pexpr(tokenizer *tz, int min_b, arena *a) {
         }
         lval->nodes[argc] = NULL;
         return lval;
-    } else if (expect(*tz, TOK_LAMBDA)) {
-        skip(tz);
-        if (!expect(*tz, TOK_ID))
-            return NULL;
-        token tok_id = {0};
-        next_token(tz, &tok_id);
-        tok_id.name = strdup(tok_id.name);
-        if (!expect(*tz, TOK_LP))
-            return NULL;
-        skip(tz);
-
-        p_tree *id = arena_alloc(&l_arena, sizeof(p_tree)); 
-        id->kind = TREE_LAMBDA;
-        id->val = tok_id;
-
-        int argc = 0;
-        token id1 = {0};
-        if (expect(*tz, TOK_ID)) {
-            next_token(tz, &id1);
-            id1.name = strdup(id1.name);
-            p_tree *t = arena_alloc(&l_arena, sizeof(p_tree));
-            t->kind = TREE_VAR;
-            t->val = id1;
-            id->nodes[argc++] = t;
-        }
-        
-        for (;;) {
-            if (expect(*tz, TOK_RP)) {
-                skip(tz);
-                break;
-            }
-
-            if (!expect(*tz, TOK_COM))
-                return NULL;
-            skip(tz);
-            if (!expect(*tz, TOK_ID))
-                return NULL;
-            if (argc >= NODE_CAP-1)
-                return NULL;
-            next_token(tz, &id1);
-            p_tree *t = arena_alloc(&l_arena, sizeof(p_tree));
-            t->kind = TREE_VAR;
-            id1.name = strdup(id1.name);
-            t->val = id1;
-            id->nodes[argc++] = t;
-        }
-
-        id->nodes[argc] = NULL;
-
-        if (!expect(*tz, TOK_EQ))
-            return NULL;
-        token eq = {0};
-        next_token(tz, &eq);
-        p_tree *rexpr = parse_expr(tz, 0, &l_arena);
-        if (rexpr == NULL)
-            return NULL;
-        p_tree *as = arena_alloc(&l_arena, sizeof(p_tree));
-        memset(as, 0, sizeof(p_tree));
-        as->kind = TREE_ASSIGN;
-        as->val = eq;
-        as->nodes[0] = id;
-        as->nodes[1] = rexpr;
-        return as;
     }
+
     return NULL;
 }
 
@@ -815,7 +584,6 @@ p_tree *parse_expr(tokenizer *tz, int min_b, arena *a) {
 
 int main(void) {
     p_arena = arena_init(ARENA_CAP);
-    l_arena = arena_init(ARENA_CAP);
     assert(p_arena.ptr);
 
     assign("PI", M_PI, &gvar_table);
