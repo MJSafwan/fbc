@@ -267,7 +267,7 @@ double assign(char *name, double val, var_table *table) {
 
 
 double eval_assign(p_tree *root, var_table *table) {
-    return assign(root->nodes[0]->val.name, root->nodes[1]->val.num, &gvar_table);    
+    return assign(root->nodes[0]->val.name, eval(root->nodes[1], table), &gvar_table);    
 }
 
 double eval_var(p_tree *root, var_table *table) {
