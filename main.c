@@ -38,6 +38,12 @@
 #define TREE_VAR 4
 #define TREE_ASSIGN 5
 
+#define T_NULL 0
+#define T_NUM 1
+
+#define NULL_LIT (eval_type){0}
+#define NUM_LIT(d) (eval_type){T_NUM, d}
+
 typedef struct {
     int kind;
     union {
@@ -46,6 +52,13 @@ typedef struct {
         char op_id;
     };
 } token;
+
+typedef struct {
+    int type;
+    union {
+        double num;
+    };
+} eval_type;
 
 typedef struct {
     size_t cursor;
@@ -65,7 +78,7 @@ struct p_tree {
 
 typedef struct {
     char *name;
-    double val;
+    eval_type val;
 } var_entry;
 
 typedef struct {
@@ -97,6 +110,11 @@ pair op_bind[128] = {
 pair lop_bind[128] = {
   ['-'] = (pair){0, 1},  
   ['~'] = (pair){0, 1},
+};
+
+const char *tstr[] = {
+    [T_NUM] = "Number",
+    [T_NULL] = "Null",
 };
 
 int is_op(char c) {
@@ -234,10 +252,18 @@ token peek(tokenizer tkzer) {
     return next;
 }
 
+int exp_type(eval_type t, int target) {
+    if (t.type != target) {
+        printf("Expected %s, got %s\n", tstr[target], tstr[t.type]);
+        return 0;
+    }
+    return 1;
+}
 
-double eval(p_tree *root, var_table *table);
 
-double get_var(char *name, int *exists, var_table *table) {
+eval_type eval(p_tree *root, var_table *table);
+
+eval_type get_var(char *name, int *exists, var_table *table) {
     for (int i = 0; i < table->count; ++i) {
         var_entry ent = table->items[i];
         if (strcmp(name, ent.name) == 0) {
@@ -246,10 +272,10 @@ double get_var(char *name, int *exists, var_table *table) {
         }
     }
     *exists = -1;
-    return 0;
+    return NULL_LIT;
 }
 
-double assign(char *name, double val, var_table *table) {
+eval_type assign(char *name, eval_type val, var_table *table) {
     int exists = -1;
     get_var(name, &exists, table);
     if (exists >= 0) {
@@ -270,65 +296,77 @@ double assign(char *name, double val, var_table *table) {
 }
 
 
-double eval_assign(p_tree *root, var_table *table) {
+eval_type eval_assign(p_tree *root, var_table *table) {
     return assign(root->nodes[0]->val.name, eval(root->nodes[1], table), &gvar_table);    
 }
 
-double eval_var(p_tree *root, var_table *table) {
+eval_type eval_var(p_tree *root, var_table *table) {
     int exists = -1;
-    double val = get_var(root->val.name, &exists, table);    
+    eval_type val = get_var(root->val.name, &exists, table);    
     if (exists < 0) {
-        if (table != &gvar_table) {
-            val = get_var(root->val.name, &exists, &gvar_table);
-            if (exists < 0)
-                return 0;
-        }
+        printf("Variable '%s' is undefined.\n", root->val.name);
+        return NULL_LIT;
     }
     return val;
 }
 
-double eval_uop(p_tree *root, var_table *table) {
+eval_type eval_uop(p_tree *root, var_table *table) {
+    eval_type num1 = eval(root->nodes[0], table);
+    if (!exp_type(num1, T_NUM))
+        return NULL_LIT;
     switch (root->val.op_id) {
         case '-':
-            return -eval(root->nodes[0], table);
+            return NUM_LIT(-num1.num);
         case '~':
-            return ~(int)eval(root->nodes[0], table);
+            return NUM_LIT(~((int)num1.num));
        default:
-            return 0;
+            return NULL_LIT;
     }
 }
 
-double eval_bop(p_tree *root, var_table *table) {
+eval_type eval_bop(p_tree *root, var_table *table) {
+    eval_type t_num1 = eval(root->nodes[0], table);
+    if (!exp_type(t_num1, T_NUM)) {
+        return NULL_LIT;
+    }
+    eval_type t_num2 = eval(root->nodes[1], table);
+    if (!exp_type(t_num2, T_NUM)) {
+        return NULL_LIT;
+    }
+
+    double num1 = t_num1.num;
+    double num2 = t_num2.num;
     switch (root->val.op_id) {
         case '+':
-            return eval(root->nodes[0], table) + eval(root->nodes[1], table);
+            return NUM_LIT(num1 + num2);
         case '&':
-            return (int)eval(root->nodes[0], table) & (int)eval(root->nodes[1], table);
+            return NUM_LIT((int)num1 & (int)num2);
         case '|':
-            return (int)eval(root->nodes[0], table) | (int)eval(root->nodes[1], table);
+            return NUM_LIT((int)num1 | (int)num2);
         case '*':
-            return eval(root->nodes[0], table) * eval(root->nodes[1], table);
+            return NUM_LIT(num1 * num2);
         case '-':
-            return eval(root->nodes[0], table) - eval(root->nodes[1], table);
+            return NUM_LIT(num1 - num2);
         case '/': {
-            double num2 = eval(root->nodes[1], table);
-            if (num2 == 0)
-                return NAN;
-            return eval(root->nodes[0], table) / num2;
+            if (num2 == 0) {
+                printf("Cannot divide by zero\n");
+                return NULL_LIT;
+            }
+            return NUM_LIT(num1 / num2);
           }
         case '%': {
-            double num2 = eval(root->nodes[1], table);
-            if (num2 == 0)
-                return NAN;
-            return (int)eval(root->nodes[0], table) % (int)num2;
+            if (num2 == 0) {
+                printf("Zero cannot be a modulus\n");
+                return NULL_LIT;
+            }
+            return NUM_LIT((int)num1 % (int)num2);
           }
        default:
-                  return 0;
+                  return NULL_LIT;
     }
 }
 
-
-double eval_func(p_tree *root, var_table *table) {
+eval_type eval_func(p_tree *root, var_table *table) {
     int argc = 0;
     p_tree **argv = root->nodes;
     for (argc = 0; argv[argc] != NULL; ++argc);
@@ -336,79 +374,87 @@ double eval_func(p_tree *root, var_table *table) {
 
     /* 'Meta' functions */
 
-    if (strcmp(name, "debug") == 0) {
-        printf("I am the debugging function!\n");
-        printf("You gave me %d arguments.\n", argc);
-        printf("[");
-
-        for (int i = 0; i < argc; ++i) {
-            printf("%f", eval(argv[i], table));
-            if (i < argc-1)
-                printf(", ");
-        }
-
-        printf("]\n");
-        return argc;    
-    } 
-
     if (strcmp(name, "clear") == 0) {
         system("clear");
-        return 0;
+        return NULL_LIT;
     }
 
     if (strcmp(name, "exit") == 0) {
-        int code = 0;
-        if (argc >= 1)
-            code = (int)eval(argv[0], table);
-        exit(code);
+        eval_type code = NUM_LIT(0);
+        if (argc >= 1) {
+            code = eval(argv[0], table);
+        }
+        exit((int)code.num);
         // return code;
     }
 
     /* Math functions */
     if (strcmp(name, "sin") == 0) {
         if (argc != 1) {
-            return NAN;
+            return NULL_LIT;
         }
-        return sinf(eval(argv[0], table));
+        eval_type num1 = eval(argv[0], table);
+        if (!exp_type(num1, T_NUM))
+            return NULL_LIT;
+        return NUM_LIT(sinf(eval(argv[0], table).num));
     }
 
     if (strcmp(name, "cos") == 0) {
         if (argc != 1) {
-            return NAN;
+            return NULL_LIT;
         }
-        return cosf(eval(argv[0], table));
+
+        eval_type num1 = eval(argv[0], table);
+        if (!exp_type(num1, T_NUM))
+            return NULL_LIT;
+        return NUM_LIT(cosf(eval(argv[0], table).num));
     }
 
     if (strcmp(name, "pow") == 0) {
-        if (argc != 2) {
-            return NAN;
-        }
-        double n1 = eval(argv[0], table);
-        double n2 = eval(argv[1], table);
-        if (n1 == 0 && n2 == 0)
-            return 1; /* Spicey! */
+        if (argc != 2)
+            return NULL_LIT;
 
-        return pow(n1, n2);
+        eval_type n1 = eval(argv[0], table);
+        if (!exp_type(n1, T_NUM))
+            return NULL_LIT;
+        eval_type n2 = eval(argv[1], table);
+        if (!exp_type(n2, T_NUM))
+            return NULL_LIT;
+
+        if (n1.num == 0 && n2.num == 0)
+            return NUM_LIT(1); /* Spicey! */
+
+        return NUM_LIT(pow(n1.num, n2.num));
     }
 
     if (strcmp(name, "exp") == 0) {
         if (argc != 1)
-            return NAN; 
-        return exp(eval(argv[0], table));
+            return NULL_LIT; 
+
+        eval_type n1 = eval(argv[0], table);
+        if (exp_type(n1, T_NUM))
+            return NULL_LIT;
+        return NUM_LIT(exp(n1.num));
     }
 
     if (strcmp(name, "ln") == 0) {
         if (argc != 1)
-            return NAN;
-        double num = eval(argv[0], table);
-        if (num <= 0)
-            return NAN;
-        return log(num);
+            return NULL_LIT; 
+        eval_type n1 = eval(argv[0], table);
+        if (exp_type(n1, T_NUM)) 
+            return NULL_LIT;
+
+        if (n1.num <= 0) {
+            printf("Cannot take the log of a non-negative number\n");
+            return NULL_LIT;
+        }
+
+        return NUM_LIT(log(n1.num));
     }
 
     if (strcmp(name, "choice") == 0) {
         if (argc == 0)
-            return 0;
+            return NULL_LIT;
         if (argc == 1)
             return eval(argv[0], table);
         int c = rand() % argc;
@@ -416,47 +462,13 @@ double eval_func(p_tree *root, var_table *table) {
         return eval(argv[c], table);
     }
 
-    if (strcmp(name, "say") == 0) {
-        if (argc == 0)
-            return 0;
-        for (int i = 0; i < argc; ++i) {
-            printf("%f\n", eval(argv[i], table));
-        }
-        return 1;
-    }
-
-    if (strcmp(name, "rand") == 0) {
-        size_t max = RAND_MAX;
-        if (argc >= 1)
-           max = eval(argv[0], table)+1; 
-        return rand() % max;
-    }
-
-    if (strcmp(name, "log") == 0) {
-        if (argc != 2)
-            return NAN;
-
-        double n1 = eval(argv[0], table);
-        if (n1 <= 0)
-            return NAN; /* Don't bother eval-ing argv[1] */
-
-        double n2 = eval(argv[1], table);
-        if (n2 <= 0)
-            return NAN;
-        if (n2 == 1)
-            return NAN;
-        if (n1 == 1)
-            return 0;
-        return log(n1)/log(n2);
-    }
-
-    return 0;
+    return NULL_LIT;
 }
 
-double eval(p_tree *root, var_table *table) {
+eval_type eval(p_tree *root, var_table *table) {
     switch (root->kind) {
         case TREE_NUM:
-            return root->val.num;
+            return NUM_LIT(root->val.num);
         case TREE_BOP:
             return eval_bop(root, table);
         case TREE_UOP:
@@ -468,9 +480,9 @@ double eval(p_tree *root, var_table *table) {
         case TREE_ASSIGN:
             return eval_assign(root, table);
         default:
-            return 0;
+            return NULL_LIT;
     }
-    return 0;
+    return NULL_LIT;
 }
 
 p_tree *parse_expr(tokenizer *tz, int min_b, arena *a);
@@ -607,8 +619,8 @@ int main(void) {
     p_arena = arena_init(ARENA_CAP);   // Parse arena. Wiped each iteration.
     lit_arena = arena_init(ARENA_CAP); // Arena for string literals, like the names of variables.
 
-    assign("PI", M_PI, &gvar_table);
-    assign("E", M_E, &gvar_table);
+    assign("PI", NUM_LIT(M_PI), &gvar_table);
+    assign("E", NUM_LIT(M_E), &gvar_table);
 
     srand(time(NULL));
     for (;;) {
@@ -638,7 +650,10 @@ int main(void) {
             continue;
         }
 
-        printf("%f\n", eval(t, &gvar_table));
+        eval_type val = eval(t, &gvar_table);
+        int type = val.type;
+        if (type == T_NUM)
+            printf("%f\n", val.num);
         arena_pop(&p_arena);
     }
     return 0;
