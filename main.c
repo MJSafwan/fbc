@@ -595,7 +595,6 @@ int main(void) {
     srand(time(NULL));
     for (;;) {
         memset(p_arena.ptr, 0, p_arena.capacity);
-        token *ts = arena_alloc(&p_arena, 64 * sizeof(token));
 
         char *buff = readline("> ");
         if (buff == NULL) /* C-d EOF */
