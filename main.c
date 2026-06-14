@@ -95,6 +95,7 @@ typedef struct {
 
 arena p_arena = {0};
 arena lit_arena = {0};
+int err = 0;
 
 var_table gvar_table = {0};
 
@@ -112,6 +113,8 @@ pair lop_bind[128] = {
   ['-'] = (pair){0, 1},  
   ['~'] = (pair){0, 1},
 };
+
+const char *prompt = "> ";
 
 const char *tstr[] = {
     [T_NUM] = "Number",
@@ -267,6 +270,14 @@ int exp_argc(int argc, int target) {
         return 0;
     }
     return 1;
+}
+
+void report_serr(tokenizer tz) {
+    if (err != 0)
+        return;
+    printf("%*s <-- Here\n", tz.cursor+strlen(prompt), "^");
+    printf("Syntax error!\n");
+    err = 1;
 }
 
 
@@ -507,21 +518,29 @@ p_tree *parse_pexpr(tokenizer *tz, int min_b, arena *a) {
     } else if(expect(*tz, TOK_LP)) {
         skip(tz);
         p_tree *t = parse_expr(tz, 0, a);
-        if (t == NULL)
+        if (t == NULL) {
+            report_serr(*tz);
             return NULL;
-        if (!expect(*tz, TOK_RP))
+        }
+        if (!expect(*tz, TOK_RP)) {
+            report_serr(*tz);
             return NULL;
+        }
         skip(tz);
         return t;
     } else if (expect(*tz, TOK_OP)) {
             token tok_op = {0};
             next_token(tz, &tok_op);
             pair binding = lop_bind[tok_op.op_id];
-            if (binding.r == 0)
+            if (binding.r == 0) {
+                report_serr(*tz);
                 return NULL;
+            }
             p_tree *t = parse_pexpr(tz, min_b, a);
-            if (t == NULL)
+            if (t == NULL) {
+                report_serr(*tz);
                 return NULL;
+            }
             p_tree *op = arena_alloc(a, sizeof(p_tree));
             op->kind = TREE_UOP;
             op->val = tok_op;
@@ -543,8 +562,10 @@ p_tree *parse_pexpr(tokenizer *tz, int min_b, arena *a) {
                 p_tree *eq = arena_alloc(a, sizeof(p_tree));
                 memset(eq, 0, sizeof(p_tree));
                 p_tree *rval = NULL;
-                if ((rval = (parse_expr(tz, 0, a))) == NULL)
+                if ((rval = (parse_expr(tz, 0, a))) == NULL) {
+                    report_serr(*tz);
                     return NULL;
+                }
                 eq->nodes[0] = lval;
                 eq->nodes[1] = rval;
                 eq->kind = TREE_ASSIGN;
@@ -563,8 +584,10 @@ p_tree *parse_pexpr(tokenizer *tz, int min_b, arena *a) {
 
         p_tree *arg1 = parse_expr(tz, 0, a);
         int argc = 0;
-        if (arg1 == NULL)
+        if (arg1 == NULL) {
+            report_serr(*tz);
             return NULL;
+        }
 
         lval->nodes[argc++] = arg1;
 
@@ -574,13 +597,19 @@ p_tree *parse_pexpr(tokenizer *tz, int min_b, arena *a) {
         }
 
         for (;;) {
-            if (argc >= NODE_CAP-1)
+            if (argc >= NODE_CAP-1) {
+                report_serr(*tz);
                 return NULL;
-            if (!expect(*tz, TOK_COM))
+            }
+            if (!expect(*tz, TOK_COM)) {
+                report_serr(*tz);
                 return NULL;
+            }
             skip(tz);
-            if ((lval->nodes[argc++] = parse_expr(tz, 0, a)) == NULL)
+            if ((lval->nodes[argc++] = parse_expr(tz, 0, a)) == NULL) {
+                report_serr(*tz);
                 return NULL;
+            }
             if (expect(*tz, TOK_RP))
                 break;
         }
@@ -588,6 +617,7 @@ p_tree *parse_pexpr(tokenizer *tz, int min_b, arena *a) {
         return lval;
     }
 
+    report_serr(*tz);
     return NULL;
 }
 
@@ -596,8 +626,10 @@ p_tree *parse_expr(tokenizer *tz, int min_b, arena *a) {
     token pk = peek(*tz);
     if (pk.kind == TOK_END)
         return NULL;
-    if ((num1 = parse_pexpr(tz, min_b, a)) == NULL)
+    if ((num1 = parse_pexpr(tz, min_b, a)) == NULL) {
+        report_serr(*tz);
         return NULL;
+    }
 
     p_tree *root = arena_alloc(a, sizeof(p_tree));
     memcpy(root, num1, sizeof(p_tree));
@@ -613,8 +645,10 @@ p_tree *parse_expr(tokenizer *tz, int min_b, arena *a) {
         ct->val = op;
         ct->kind = TREE_BOP;
         p_tree *num2 = parse_expr(tz, binding.r, a);
-        if (num2 == NULL)
+        if (num2 == NULL) {
+            report_serr(*tz);
             return NULL;
+        }
         ct->nodes[0] = num1;
         ct->nodes[1] = num2;
         num1 = num2;
@@ -633,8 +667,9 @@ int main(void) {
     srand(time(NULL));
     for (;;) {
         memset(p_arena.ptr, 0, p_arena.capacity);
+        err = 0;
 
-        char *buff = readline("> ");
+        char *buff = readline(prompt);
         if (buff == NULL) /* C-d EOF */
             exit(0);
 
@@ -653,7 +688,6 @@ int main(void) {
         p_tree *t = parse_expr(&tz, 0, &p_arena);
 
         if (t == NULL) {
-            printf("Syntax error!\n");
             arena_pop(&p_arena);
             continue;
         }
