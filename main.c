@@ -687,7 +687,8 @@ p_tree *parse_expr(tokenizer *tz, int min_b, arena *a) {
         }
         ct->nodes[0] = num1;
         ct->nodes[1] = num2;
-        num1 = num2;
+        num1 = arena_alloc(&p_arena, sizeof(p_tree));
+        memcpy(num1, num2, sizeof(p_tree));
         ct = num2;
     }
     return root;
