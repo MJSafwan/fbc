@@ -40,9 +40,12 @@
 
 #define T_NULL 0
 #define T_NUM 1
+#define T_LAMBDA 2
 
 #define NULL_LIT (eval_type){0}
 #define NUM_LIT(d) (eval_type){T_NUM, d}
+
+typedef struct p_tree p_tree;
 
 typedef struct {
     int kind;
@@ -58,6 +61,7 @@ typedef struct {
     union {
         double num;
         char *str;
+        p_tree *lambda;
     };
 } eval_type;
 
@@ -68,11 +72,13 @@ typedef struct {
     size_t len;
 } tokenizer;
 
-typedef struct p_tree p_tree;
 
 struct p_tree {
     int kind;
-    token val;
+    union {
+        token val;
+        p_tree *lambda;
+    };
     p_tree *nodes[NODE_CAP];     
 };
 
@@ -317,7 +323,7 @@ eval_type assign(char *name, eval_type val, var_table *table) {
 
 
 eval_type eval_assign(p_tree *root, var_table *table) {
-    return assign(root->nodes[0]->val.name, eval(root->nodes[1], table), &gvar_table);    
+    return assign(root->nodes[0]->val.name, eval(root->nodes[1], table), table);    
 }
 
 eval_type eval_var(p_tree *root, var_table *table) {
@@ -384,7 +390,25 @@ eval_type eval_bop(p_tree *root, var_table *table) {
     }
 }
 
+arena lambda_arena = {0};
+
 eval_type eval_func(p_tree *root, var_table *table) {
+    arena_set_frame(&lambda_arena);
+    var_table *table_cpy = arena_alloc(&lambda_arena, sizeof(var_table));
+    table_cpy->items = arena_alloc(&lambda_arena, table->capacity * sizeof(var_entry));
+    memcpy(table_cpy, table, sizeof(var_table));
+    memcpy(table_cpy->items, table->items, table->capacity * sizeof(var_entry));
+    
+    p_tree **argv = root->nodes;
+    for (int i = 0; argv[i] != NULL; ++i) {
+        eval(argv[i], table_cpy);
+    }
+
+    eval_type t = eval(root->lambda, table_cpy);
+    arena_pop(&lambda_arena);
+    return t;
+
+#if 0
     int argc = 0;
     p_tree **argv = root->nodes;
     for (argc = 0; argv[argc] != NULL; ++argc);
@@ -464,7 +488,7 @@ eval_type eval_func(p_tree *root, var_table *table) {
             return NULL_LIT;
 
         if (n1.num <= 0) {
-            printf("Cannot take the log of a non-negative number\n");
+            printf("Cannot take the log of a non-positive number\n");
             return NULL_LIT;
         }
 
@@ -482,6 +506,7 @@ eval_type eval_func(p_tree *root, var_table *table) {
     }
 
     return NULL_LIT;
+#endif
 }
 
 eval_type eval(p_tree *root, var_table *table) {
@@ -505,6 +530,55 @@ eval_type eval(p_tree *root, var_table *table) {
 }
 
 p_tree *parse_expr(tokenizer *tz, int min_b, arena *a);
+
+p_tree *parse_callable(tokenizer *tz, p_tree *lval, arena *a) {
+    if (lval == NULL) {
+        report_serr(*tz);
+        return NULL;
+    }
+
+    p_tree *lambda = arena_alloc(&p_arena, sizeof(p_tree));
+    lambda->kind = TREE_FUNC;
+    lambda->lambda = lval;
+    if (expect(*tz, TOK_RP)) {
+        skip(tz);
+        return lambda;
+    }
+
+    p_tree *arg1 = parse_expr(tz, 0, a);
+    int argc = 0;
+    if (arg1 == NULL) {
+        report_serr(*tz);
+        return NULL;
+    }
+
+    lambda->nodes[argc++] = arg1;
+
+    if (expect(*tz, TOK_RP)) {
+        skip(tz);
+        return lambda;
+    }
+
+    for (;;) {
+        if (argc >= NODE_CAP-1) {
+            report_serr(*tz);
+            return NULL;
+        }
+        if (!expect(*tz, TOK_COM)) {
+            report_serr(*tz);
+            return NULL;
+        }
+        skip(tz);
+        if ((lambda->nodes[argc++] = parse_expr(tz, 0, a)) == NULL) {
+            report_serr(*tz);
+            return NULL;
+        }
+        if (expect(*tz, TOK_RP))
+            break;
+    }
+    lambda->nodes[argc] = NULL;
+    return lambda;
+}
 
 p_tree *parse_pexpr(tokenizer *tz, int min_b, arena *a) {
     if (expect(*tz, TOK_NUM)) {
@@ -555,65 +629,22 @@ p_tree *parse_pexpr(tokenizer *tz, int min_b, arena *a) {
         lval->val = id;
         lval->kind = TREE_VAR;
 
-        if (!expect(*tz, TOK_LP)) {
-            if (expect(*tz, TOK_EQ)) {
-                token tok_eq = {0};
-                next_token(tz, &tok_eq);
-                p_tree *eq = arena_alloc(a, sizeof(p_tree));
-                memset(eq, 0, sizeof(p_tree));
-                p_tree *rval = NULL;
-                if ((rval = (parse_expr(tz, 0, a))) == NULL) {
-                    report_serr(*tz);
-                    return NULL;
-                }
-                eq->nodes[0] = lval;
-                eq->nodes[1] = rval;
-                eq->kind = TREE_ASSIGN;
-                return eq;
-            }
-            lval->kind = TREE_VAR;
-            return lval;
-        }
-        skip(tz);
-        lval->kind = TREE_FUNC;
-
-        if (expect(*tz, TOK_RP)) {
-            skip(tz);
-            return lval;
-        }
-
-        p_tree *arg1 = parse_expr(tz, 0, a);
-        int argc = 0;
-        if (arg1 == NULL) {
-            report_serr(*tz);
-            return NULL;
-        }
-
-        lval->nodes[argc++] = arg1;
-
-        if (expect(*tz, TOK_RP)) {
-            skip(tz);
-            return lval;
-        }
-
-        for (;;) {
-            if (argc >= NODE_CAP-1) {
+        if (expect(*tz, TOK_EQ)) {
+            token tok_eq = {0};
+            next_token(tz, &tok_eq);
+            p_tree *eq = arena_alloc(a, sizeof(p_tree));
+            memset(eq, 0, sizeof(p_tree));
+            p_tree *rval = NULL;
+            if ((rval = (parse_expr(tz, 0, a))) == NULL) {
                 report_serr(*tz);
                 return NULL;
             }
-            if (!expect(*tz, TOK_COM)) {
-                report_serr(*tz);
-                return NULL;
-            }
-            skip(tz);
-            if ((lval->nodes[argc++] = parse_expr(tz, 0, a)) == NULL) {
-                report_serr(*tz);
-                return NULL;
-            }
-            if (expect(*tz, TOK_RP))
-                break;
+            eq->nodes[0] = lval;
+            eq->nodes[1] = rval;
+            eq->kind = TREE_ASSIGN;
+            return eq;
         }
-        lval->nodes[argc] = NULL;
+        lval->kind = TREE_VAR;
         return lval;
     }
 
@@ -629,6 +660,11 @@ p_tree *parse_expr(tokenizer *tz, int min_b, arena *a) {
     if ((num1 = parse_pexpr(tz, min_b, a)) == NULL) {
         report_serr(*tz);
         return NULL;
+    }
+
+    if (expect(*tz, TOK_LP)) {
+        skip(tz);
+        return parse_callable(tz, num1, a);
     }
 
     p_tree *root = arena_alloc(a, sizeof(p_tree));
@@ -660,6 +696,7 @@ p_tree *parse_expr(tokenizer *tz, int min_b, arena *a) {
 int main(void) {
     p_arena = arena_init(ARENA_CAP);   // Parse arena. Wiped each iteration.
     lit_arena = arena_init(ARENA_CAP); // Arena for string literals, like the names of variables.
+    lambda_arena = arena_init(ARENA_CAP);
 
     assign("PI", NUM_LIT(M_PI), &gvar_table);
     assign("E", NUM_LIT(M_E), &gvar_table);
