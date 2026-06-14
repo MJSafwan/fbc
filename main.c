@@ -77,6 +77,7 @@ typedef struct {
 } pair;
 
 arena p_arena = {0};
+arena lit_arena = {0};
 
 var_table gvar_table = {0};
 
@@ -158,7 +159,7 @@ int next_token(tokenizer *tk, token *out) {
                 }
 
                 if (isalpha(c) == 1) {
-                    s = arena_alloc(&p_arena, tk->len);
+                    s = arena_alloc(&lit_arena, tk->len);
                     strncpy(s, tk->buff, tk->len);
                     tk->state = READ_ID;
                     offset = tk->cursor;
@@ -259,7 +260,7 @@ double assign(char *name, double val, var_table *table) {
     }
 
     table->items[table->count].val = val;
-    table->items[table->count].name = strdup(name);
+    table->items[table->count].name = name;
     table->count++;
     return val;
 }
@@ -489,7 +490,7 @@ p_tree *parse_pexpr(tokenizer *tz, int min_b, arena *a) {
     } else if (expect(*tz, TOK_ID)) {
         token id = {0};
         next_token(tz, &id);     
-        id.name = strdup(id.name);
+        id.name = id.name;
         p_tree *lval = arena_alloc(a, sizeof(p_tree));
         memset(lval, 0, sizeof(p_tree));
         lval->val = id;
@@ -583,8 +584,10 @@ p_tree *parse_expr(tokenizer *tz, int min_b, arena *a) {
 }
 
 int main(void) {
-    p_arena = arena_init(ARENA_CAP);
+    p_arena = arena_init(ARENA_CAP);   // Parse arena. Wiped each iteration.
+    lit_arena = arena_init(ARENA_CAP); // Arena for string literals, like the names of variables.
     assert(p_arena.ptr);
+    assert(lit_arena.ptr);
 
     assign("PI", M_PI, &gvar_table);
     assign("E", M_E, &gvar_table);
