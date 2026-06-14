@@ -15,7 +15,7 @@
 
 #define BUFF_CAP 256
 #define ARENA_CAP (1024*100)
-#define NODE_CAP 16
+#define NODE_CAP 3
 
 #define TOK_INV 0
 #define TOK_NUM 1
@@ -394,9 +394,11 @@ arena lambda_arena = {0};
 
 eval_type eval_func(p_tree *root, var_table *table) {
     arena_set_frame(&lambda_arena);
+
     var_table *table_cpy = arena_alloc(&lambda_arena, sizeof(var_table));
-    table_cpy->items = arena_alloc(&lambda_arena, table->capacity * sizeof(var_entry));
     memcpy(table_cpy, table, sizeof(var_table));
+
+    table_cpy->items = arena_alloc(&lambda_arena, table->capacity * sizeof(var_entry));
     memcpy(table_cpy->items, table->items, table->capacity * sizeof(var_entry));
     
     p_tree **argv = root->nodes;
@@ -540,44 +542,21 @@ p_tree *parse_callable(tokenizer *tz, p_tree *lval, arena *a) {
     p_tree *lambda = arena_alloc(&p_arena, sizeof(p_tree));
     lambda->kind = TREE_FUNC;
     lambda->lambda = lval;
-    if (expect(*tz, TOK_RP)) {
-        skip(tz);
-        return lambda;
-    }
 
     p_tree *arg1 = parse_expr(tz, 0, a);
-    int argc = 0;
     if (arg1 == NULL) {
         report_serr(*tz);
         return NULL;
     }
 
-    lambda->nodes[argc++] = arg1;
+    lambda->nodes[0] = arg1;
 
     if (expect(*tz, TOK_RP)) {
         skip(tz);
         return lambda;
     }
 
-    for (;;) {
-        if (argc >= NODE_CAP-1) {
-            report_serr(*tz);
-            return NULL;
-        }
-        if (!expect(*tz, TOK_COM)) {
-            report_serr(*tz);
-            return NULL;
-        }
-        skip(tz);
-        if ((lambda->nodes[argc++] = parse_expr(tz, 0, a)) == NULL) {
-            report_serr(*tz);
-            return NULL;
-        }
-        if (expect(*tz, TOK_RP))
-            break;
-    }
-    lambda->nodes[argc] = NULL;
-    return lambda;
+    return NULL;
 }
 
 p_tree *parse_pexpr(tokenizer *tz, int min_b, arena *a) {
@@ -664,7 +643,14 @@ p_tree *parse_expr(tokenizer *tz, int min_b, arena *a) {
 
     if (expect(*tz, TOK_LP)) {
         skip(tz);
-        return parse_callable(tz, num1, a);
+        num1 = parse_callable(tz, num1, a);
+        for (;;) {
+            if (!expect(*tz, TOK_LP))
+                break;
+            skip(tz);
+            num1 = parse_callable(tz, num1, a);
+        }
+        return num1;
     }
 
     p_tree *root = arena_alloc(a, sizeof(p_tree));
