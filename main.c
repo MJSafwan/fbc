@@ -6,6 +6,9 @@
 #include <math.h>
 #include <editline.h>
 #include <time.h>
+#include <stdarg.h>
+
+#include "xassert.h"
 
 #define ARENA_IMPLEMENTATION
 #include "arena.h"
@@ -103,6 +106,7 @@ int is_op(char c) {
 int is_num(char c) {
     return c >= '0' && c <= '9';
 }
+
 
 int next_token(tokenizer *tk, token *out) {
     tk->state = SEEK_CHAR;
@@ -256,7 +260,7 @@ double assign(char *name, double val, var_table *table) {
     if (table->count >= table->capacity) {
         table->capacity = table->capacity == 0 ? 16 : table->capacity * 2;
         table->items = realloc(table->items, table->capacity * sizeof(var_entry));
-        assert(table->items);
+        xassert(table->items, "Out of memory!\n");
     }
 
     table->items[table->count].val = val;
@@ -379,22 +383,27 @@ double eval_func(p_tree *root, var_table *table) {
         if (argc != 2) {
             return NAN;
         }
+        double n1 = eval(argv[0], table);
+        double n2 = eval(argv[1], table);
+        if (n1 == 0 && n2 == 0)
+            return 1; /* Spicey! */
 
-        return pow(eval(argv[0], table), eval(argv[1], table));
+        return pow(n1, n2);
     }
 
     if (strcmp(name, "exp") == 0) {
-        if (argc != 1) {
+        if (argc != 1)
             return NAN; 
-        }
         return exp(eval(argv[0], table));
     }
 
     if (strcmp(name, "ln") == 0) {
-        if (argc != 1) {
+        if (argc != 1)
             return NAN;
-        }
-        return log(eval(argv[0], table));
+        double num = eval(argv[0], table);
+        if (num <= 0)
+            return NAN;
+        return log(num);
     }
 
     if (strcmp(name, "choice") == 0) {
@@ -424,10 +433,21 @@ double eval_func(p_tree *root, var_table *table) {
     }
 
     if (strcmp(name, "log") == 0) {
-        if (argc != 2) {
+        if (argc != 2)
             return NAN;
-        }
-        return log(eval(argv[0], table))/log(eval(argv[1], table));
+
+        double n1 = eval(argv[0], table);
+        if (n1 <= 0)
+            return NAN; /* Don't bother eval-ing argv[1] */
+
+        double n2 = eval(argv[1], table);
+        if (n2 <= 0)
+            return NAN;
+        if (n2 == 1)
+            return NAN;
+        if (n1 == 1)
+            return 0;
+        return log(n1)/log(n2);
     }
 
     return 0;
@@ -586,8 +606,6 @@ p_tree *parse_expr(tokenizer *tz, int min_b, arena *a) {
 int main(void) {
     p_arena = arena_init(ARENA_CAP);   // Parse arena. Wiped each iteration.
     lit_arena = arena_init(ARENA_CAP); // Arena for string literals, like the names of variables.
-    assert(p_arena.ptr);
-    assert(lit_arena.ptr);
 
     assign("PI", M_PI, &gvar_table);
     assign("E", M_E, &gvar_table);

@@ -3,8 +3,10 @@
 #include <stdlib.h>
 #include <assert.h>
 #include <string.h>
+#include "xassert.h"
 
 #define STACK_ALIGNMENT 16
+
 
 #ifndef ARENA_H_
 #define ARENA_H_
@@ -32,6 +34,7 @@ arena arena_init(uint64_t capacity) {
         .offset = 0,
     };
 
+    xassert(s.ptr, "Cannot allocate memory of size %llu for arena!\n", capacity);
     if (s.ptr == NULL) {
         perror("malloc");
         exit(1);
@@ -41,10 +44,10 @@ arena arena_init(uint64_t capacity) {
 }
 
 void *arena_alloc(arena *s, uint64_t size) {
-    if (size == 0) return NULL;
+    xassert(size, "Trying to allocate memory of size zero!\n"); 
 
     size += size % STACK_ALIGNMENT == 0 ? 0 : (STACK_ALIGNMENT - size % STACK_ALIGNMENT);
-    if (s->offset + size > s->capacity) return NULL;
+    xassert(s->offset+size > s->capacity, "Allocation of %llu bytes is out of the bounds of arena %p!\n", size, s);   
     uint64_t offset = s->offset;
     s->offset += size;
     return (char *)(s->ptr) + offset;
