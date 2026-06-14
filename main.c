@@ -261,6 +261,14 @@ int exp_type(eval_type t, int target) {
     return 1;
 }
 
+int exp_argc(int argc, int target) {
+    if (argc != target) {
+        printf("Expected %d argument(s), got %d\n", target, argc);
+        return 0;
+    }
+    return 1;
+}
+
 
 eval_type eval(p_tree *root, var_table *table);
 
@@ -383,15 +391,15 @@ eval_type eval_func(p_tree *root, var_table *table) {
         if (argc >= 1) {
             code = eval(argv[0], table);
         }
+
         exit((int)code.num);
         // return code;
     }
 
     /* Math functions */
     if (strcmp(name, "sin") == 0) {
-        if (argc != 1) {
+        if (!exp_argc(argc, 1))
             return NULL_LIT;
-        }
         eval_type num1 = eval(argv[0], table);
         if (!exp_type(num1, T_NUM))
             return NULL_LIT;
@@ -399,9 +407,8 @@ eval_type eval_func(p_tree *root, var_table *table) {
     }
 
     if (strcmp(name, "cos") == 0) {
-        if (argc != 1) {
+        if (!exp_argc(argc, 1))
             return NULL_LIT;
-        }
 
         eval_type num1 = eval(argv[0], table);
         if (!exp_type(num1, T_NUM))
@@ -410,7 +417,7 @@ eval_type eval_func(p_tree *root, var_table *table) {
     }
 
     if (strcmp(name, "pow") == 0) {
-        if (argc != 2)
+        if (!exp_argc(argc, 2))
             return NULL_LIT;
 
         eval_type n1 = eval(argv[0], table);
@@ -427,8 +434,8 @@ eval_type eval_func(p_tree *root, var_table *table) {
     }
 
     if (strcmp(name, "exp") == 0) {
-        if (argc != 1)
-            return NULL_LIT; 
+        if (!exp_argc(argc, 1))
+            return NULL_LIT;
 
         eval_type n1 = eval(argv[0], table);
         if (!exp_type(n1, T_NUM))
@@ -437,6 +444,8 @@ eval_type eval_func(p_tree *root, var_table *table) {
     }
 
     if (strcmp(name, "ln") == 0) {
+        if (argc != 1)
+            return NULL_LIT; 
         if (argc != 1)
             return NULL_LIT; 
         eval_type n1 = eval(argv[0], table);
