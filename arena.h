@@ -47,7 +47,7 @@ void *arena_alloc(arena *s, uint64_t size) {
     xassert(size, "Trying to allocate memory of size zero!\n"); 
 
     size += size % STACK_ALIGNMENT == 0 ? 0 : (STACK_ALIGNMENT - size % STACK_ALIGNMENT);
-    xassert(s->offset+size > s->capacity, "Allocation of %llu bytes is out of the bounds of arena %p!\n", size, s);   
+    xassert(s->offset+size <= s->capacity, "Allocation of %llu bytes is out of the bounds of arena %p!\n", size, s);   
     uint64_t offset = s->offset;
     s->offset += size;
     return (char *)(s->ptr) + offset;
