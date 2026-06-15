@@ -7,6 +7,7 @@
 #include <editline.h>
 #include <time.h>
 #include <stdarg.h>
+#include <errno.h>
 
 #include "xassert.h"
 
@@ -26,6 +27,7 @@
 #define TOK_ID 6
 #define TOK_COM 7
 #define TOK_EQ 8
+#define TOK_COMMENT 9
 
 #define SEEK_CHAR 0
 #define READ_NUM 1
@@ -187,6 +189,12 @@ int next_token(tokenizer *tk, token *out) {
                     return TOK_EQ;
                 }
 
+                if (c == '#') {
+                    out->kind = TOK_COMMENT;
+                    tk->cursor++;
+                    return TOK_COMMENT;
+                }
+
                 if (isalpha(c) == 1) {
                     s = arena_alloc(&lit_arena, tk->len);
                     strncpy(s, tk->buff, tk->len);
@@ -278,7 +286,8 @@ int exp_argc(int argc, int target) {
 void report_serr(tokenizer tz) {
     if (err != 0)
         return;
-    printf("%*s <-- Here\n", tz.cursor+strlen(prompt), "^");
+    puts(tz.buff);
+    printf("%*s <-- Here\n", tz.cursor, "^");
     printf("Syntax error!\n");
     err = 1;
 }
@@ -532,6 +541,8 @@ p_tree *parse_expr(tokenizer *tz, int min_b, arena *a) {
     token pk = peek(*tz);
     if (pk.kind == TOK_END)
         return NULL;
+    if (pk.kind == TOK_COMMENT)
+        return NULL;
     if ((num1 = parse_pexpr(tz, min_b, a)) == NULL) {
         report_serr(*tz);
         return NULL;
@@ -576,44 +587,67 @@ p_tree *parse_expr(tokenizer *tz, int min_b, arena *a) {
     return root;
 }
 
+eval_type pe_line(char *line) {
+        memset(p_arena.ptr, 0, p_arena.capacity);
+        err = 0;
+
+        size_t bytes_read = strlen(line)+1;
+        tokenizer tz = {0};
+        tz.buff = line;
+        tz.len = bytes_read;
+
+        token p = peek(tz);
+        if (p.kind == TOK_END) {
+            arena_pop(&p_arena);
+            return NULL_LIT;
+        }
+        if (p.kind == TOK_COMMENT) {
+            arena_pop(&p_arena);
+            return NULL_LIT;
+        }
+
+        p_tree *t = parse_expr(&tz, 0, &p_arena);
+
+        if (t == NULL) {
+            arena_pop(&p_arena);
+            return NULL_LIT;
+        }
+
+        eval_type val = eval(t, &gvar_table);
+        arena_pop(&p_arena);
+        return val;
+}
+
+void eval_file(char *fn) {
+    FILE *f = fopen(fn, "r");
+    xassert(f, "Cannot open file!\n%s: %s\n", fn, strerror(errno));
+    size_t bcap = 1028;
+    char *buff = malloc(bcap);
+    xassert(buff, "Cannot allocate buffer for reading file\n");
+    memset(buff, 0, bcap);
+    while (fgets(buff, bcap, f)) {
+        pe_line(buff);
+        memset(buff, 0, bcap);
+    }
+    fclose(f);
+}
+
 int main(void) {
     p_arena = arena_init(ARENA_CAP);   // Parse arena. Wiped each iteration.
     lit_arena = arena_init(ARENA_CAP); // Arena for string literals, like the names of variables.
     lambda_arena = arena_init(ARENA_CAP);
 
     srand(time(NULL));
-    for (;;) {
-        memset(p_arena.ptr, 0, p_arena.capacity);
-        err = 0;
+    eval_file("std.fbc");
 
+    for (;;) {
         char *buff = readline(prompt);
         if (buff == NULL) /* C-d EOF */
             exit(0);
-
-        size_t bytes_read = strlen(buff)+1;
-        tokenizer tz = {0};
-        tz.buff = buff;
-        tz.len = bytes_read;
-
-        token p = peek(tz);
-        if (p.kind == TOK_END) {
-            arena_pop(&p_arena);
-            continue;
-        }
-
-        double res = 0.0f;
-        p_tree *t = parse_expr(&tz, 0, &p_arena);
-
-        if (t == NULL) {
-            arena_pop(&p_arena);
-            continue;
-        }
-
-        eval_type val = eval(t, &gvar_table);
-        int type = val.type;
-        if (type == T_NUM)
+        
+        eval_type val = pe_line(buff);
+        if (val.type == T_NUM)
             printf("%f\n", val.num);
-        arena_pop(&p_arena);
     }
     return 0;
 }
