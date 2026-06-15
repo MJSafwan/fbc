@@ -314,8 +314,11 @@ eval_type assign(char *name, p_tree *val, var_table *table) {
     get_var(name, &exists, table);
     if (exists >= 0) {
         table->items[exists].val.lambda = val;
-        table->items[exists].val.type = T_LAMBDA;
-        return eval(val, table);
+        if (table == &gvar_table) {
+            return table->items[table->count].val;
+        } else {
+            return eval(val, table);
+        }
     }
 
     if (table->count >= table->capacity) {
@@ -327,7 +330,12 @@ eval_type assign(char *name, p_tree *val, var_table *table) {
     table->items[table->count].val.lambda = val;
     table->items[table->count].name = name;
     table->count++;
-    return table->items[table->count].val;
+
+    if (table == &gvar_table) {
+        return table->items[table->count].val;
+    } else {
+        return eval(val, table);
+    }
 }
 
 
@@ -397,6 +405,7 @@ eval_type eval_bop(p_tree *root, var_table *table) {
 arena lambda_arena = {0};
 
 int eval_builtin(char *name, var_table *table, eval_type *ret) {
+
     if (name == NULL)
         return 0;
 
@@ -414,32 +423,28 @@ int eval_builtin(char *name, var_table *table, eval_type *ret) {
         exit(code);
         // return 1;
     }
-    
+
     if (strcmp(name, "if") == 0) {
         int exists = -1;
-        int cond = 0;
         eval_type t_cond = get_var("cond", &exists, table);
+        int cond = 0;
         if (exists >= 0) {
             cond = eval(t_cond.lambda, table).num;
-        } else {
-            return 1;
         }
 
-        exists = -1;
         eval_type t_then = get_var("then", &exists, table);
         if (cond != 0 && exists >= 0) {
             *ret = eval(t_then.lambda, table);
             return 1;
         }
 
-        exists = -1;
         eval_type t_else = get_var("else", &exists, table);
         if (cond == 0 && exists >= 0) {
             *ret = eval(t_else.lambda, table);
         }
         return 1;
     }
-
+    
     return 0;
 }
 
@@ -450,17 +455,18 @@ eval_type eval_func(p_tree *root, var_table *table) {
     var_table *table_cpy = arena_alloc(&lambda_arena, sizeof(var_table));
     memcpy(table_cpy, table, sizeof(var_table));
 
-    table_cpy->items = arena_alloc(&lambda_arena, table->count * sizeof(var_entry));
-    memcpy(table_cpy->items, table->items, table->count * sizeof(var_entry));
+    table_cpy->items = arena_alloc(&lambda_arena, table->capacity * sizeof(var_entry));
+    memcpy(table_cpy->items, table->items, table->capacity * sizeof(var_entry));
     
+    char *name = NULL;
+    if (root->lambda->val.kind == TOK_ID)
+        name = root->lambda->val.name;
+
     p_tree **argv = root->nodes;
     for (int i = 0; argv[i] != NULL; ++i) {
         eval(argv[i], table_cpy);
     }
 
-    char *name = NULL;
-    if (root->lambda->val.kind == TOK_ID)
-        name = root->lambda->val.name;
     eval_type t = NULL_LIT;
     if (!eval_builtin(name, table_cpy, &t))
         t = eval(root->lambda, table_cpy);
@@ -607,7 +613,14 @@ p_tree *parse_expr(tokenizer *tz, int min_b, arena *a) {
 
     if (expect(*tz, TOK_LP)) {
         skip(tz);
-        return parse_callable(tz, num1, a);
+        num1 = parse_callable(tz, num1, a);
+        for (;;) {
+            if (!expect(*tz, TOK_LP))
+                break;
+            skip(tz);
+            num1 = parse_callable(tz, num1, a);
+        }
+        return num1;
     }
 
     p_tree *root = arena_alloc(a, sizeof(p_tree));
