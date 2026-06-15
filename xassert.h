@@ -3,6 +3,6 @@
     if (!(cond)) {\
         printf("%s:%s:%d Assersion failed: ", __FILE__, __func__, __LINE__);\
         printf(msg,##__VA_ARGS__);\
-        exit(1);\
+        __builtin_debugtrap();\
     }
 #endif

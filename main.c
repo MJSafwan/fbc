@@ -16,6 +16,7 @@
 
 #define BUFF_CAP 256
 #define ARENA_CAP (1024*100)
+#define ASSIGN_ARENA (1024*4)
 #define NODE_CAP 3
 
 #define TOKS \
@@ -26,7 +27,7 @@
     X(TOK_RP, ")")\
     X(TOK_END, "EOF")\
     X(TOK_ID, "Id")\
-    X(TOK_COM, ",")\
+    X(TOK_DEF, ":")\
     X(TOK_EQ, "=")\
     X(TOK_COMMENT, "#")\
     X(NT_EXPER, "Expression")
@@ -69,6 +70,7 @@ SERR
 #define TREE_FUNC 3
 #define TREE_VAR 4
 #define TREE_ASSIGN 5
+#define TREE_DEFINE 6
 
 #define T_NULL 0
 #define T_NUM 1
@@ -92,7 +94,10 @@ typedef struct {
     int type;
     union {
         double num;
-        p_tree *lambda;
+        struct {
+            p_tree *lambda;
+            arena as_arena;
+        };
     };
 } eval_type;
 
@@ -108,6 +113,7 @@ struct p_tree {
     int kind;
     union {
         token val;
+        arena as_arena;
         p_tree *lambda;
     };
     p_tree *nodes[NODE_CAP];     
@@ -137,10 +143,10 @@ int err = 0;
 var_table gvar_table = {0};
 
 pair op_bind[128] = {
-    ['+'] = (pair){2, 3},
-    ['-'] = (pair){2, 3},
-    ['*'] = (pair){4, 5},
-    ['/'] = (pair){4, 5},
+    ['+'] = (pair){1, 2},
+    ['-'] = (pair){1, 2},
+    ['*'] = (pair){3, 4},
+    ['/'] = (pair){3, 4},
     ['^'] = (pair){6, 7},
 };
 
@@ -207,10 +213,10 @@ int next_token(tokenizer *tk, token *out) {
                     return TOK_RP;
                 }
 
-                if (c == ',') {
-                    out->kind = TOK_COM;
+                if (c == ':') {
+                    out->kind = TOK_DEF;
                     tk->cursor++;
-                    return TOK_COM;
+                    return TOK_DEF;
                 }
 
                 if (c == '=') {
@@ -346,17 +352,23 @@ eval_type get_var(char *name, int *exists, var_table *table) {
 }
 
 
-/* All variables are bound to a lambda type */
-eval_type assign(char *name, p_tree *val, var_table *table) {
+eval_type assign(p_tree *root, var_table *table, int define) {
+    char *name = root->nodes[0]->val.name;
+    p_tree *val = root->nodes[1];
+    arena as_arena = root->as_arena;
+
     int exists = -1;
     get_var(name, &exists, table);
     if (exists >= 0) {
-        table->items[exists].val.lambda = val;
-        if (table == &gvar_table) {
-            return table->items[table->count].val;
+        if (define == 0) {
+            table->items[exists].val = eval(val, table);
         } else {
-            return eval(val, table);
+            arena_destroy(&table->items[exists].val.as_arena);
+            table->items[exists].val.as_arena = as_arena;
+            table->items[exists].val.lambda = val;
+            table->items[exists].val.type = T_LAMBDA;
         }
+        return table->items[exists].val;
     }
 
     if (table->count >= table->capacity) {
@@ -365,28 +377,41 @@ eval_type assign(char *name, p_tree *val, var_table *table) {
         xassert(table->items, "Out of memory!\n");
     }
 
-    table->items[table->count].val.lambda = val;
+    if (define == 0) {
+        table->items[table->count].val = eval(val, table);
+    } else {
+        table->items[table->count].val.lambda = val;
+        table->items[table->count].val.as_arena = as_arena;
+        table->items[table->count].val.type = T_LAMBDA;
+    }
+
     table->items[table->count].name = name;
     table->count++;
 
-    if (table == &gvar_table) {
-        return table->items[table->count].val;
-    } else {
-        return eval(val, table);
-    }
+    return table->items[table->count].val;
 }
 
 
 eval_type eval_assign(p_tree *root, var_table *table) {
-    return assign(root->nodes[0]->val.name, root->nodes[1], table);    
+    return assign(root, table, 0);    
 }
+
+eval_type eval_define(p_tree *root, var_table *table) {
+    return assign(root, table, 1);    
+}
+
 
 eval_type eval_var(p_tree *root, var_table *table) {
     int exists = -1;
     eval_type val = get_var(root->val.name, &exists, table);    
     if (exists < 0)
         return NULL_LIT;
-    return eval(val.lambda, table);
+    if (val.type == T_NUM) {
+        return val;
+    } else if (val.type == T_LAMBDA){
+        return eval(val.lambda, table);
+    }
+    return NULL_LIT;
 }
 
 eval_type eval_uop(p_tree *root, var_table *table) {
@@ -526,6 +551,8 @@ eval_type eval(p_tree *root, var_table *table) {
             return eval_var(root, table);
         case TREE_ASSIGN:
             return eval_assign(root, table);
+        case TREE_DEFINE:
+            return eval_define(root, table);
         default:
             return NULL_LIT;
     }
@@ -589,7 +616,7 @@ p_tree *parse_pexpr(tokenizer *tz, int min_b, arena *a) {
             token tok_op = {0};
             next_token(tz, &tok_op);
             pair binding = lop_bind[tok_op.op_id];
-            p_tree *t = parse_pexpr(tz, min_b, a);
+            p_tree *t = parse_pexpr(tz, 0, a);
             if (t == NULL) {
                 report_serr(*tz, ERR_UNEXP, NT_EXPER, peek(*tz).kind);
                 return NULL;
@@ -607,19 +634,28 @@ p_tree *parse_pexpr(tokenizer *tz, int min_b, arena *a) {
         lval->val = id;
         lval->kind = TREE_VAR;
 
-        if (expect(*tz, TOK_EQ)) {
+        if (expect(*tz, TOK_EQ) || expect(*tz, TOK_DEF)) {
             token tok_eq = {0};
             next_token(tz, &tok_eq);
+
             p_tree *eq = arena_alloc(&lit_arena, sizeof(p_tree));
             memset(eq, 0, sizeof(p_tree));
+
+            arena as_arena = arena_init(ASSIGN_ARENA);
+            eq->as_arena = as_arena;
             p_tree *rval = NULL;
-            if ((rval = (parse_expr(tz, 0, &lit_arena))) == NULL) {
+            if ((rval = (parse_expr(tz, 0, &as_arena))) == NULL) {
                 report_serr(*tz, ERR_UNEXP, NT_EXPER, peek(*tz).kind);
                 return NULL;
             }
             eq->nodes[0] = lval;
             eq->nodes[1] = rval;
-            eq->kind = TREE_ASSIGN;
+            if (tok_eq.kind == TOK_EQ) {
+                eq->kind = TREE_ASSIGN;
+            } else {
+                eq->kind = TREE_DEFINE;
+            }
+
             return eq;
         }
         lval->kind = TREE_VAR;
@@ -636,7 +672,7 @@ p_tree *parse_expr(tokenizer *tz, int min_b, arena *a) {
         return NULL;
     if (pk.kind == TOK_COMMENT)
         return NULL;
-    if ((num1 = parse_pexpr(tz, min_b, a)) == NULL) {
+    if ((num1 = parse_pexpr(tz, 0, a)) == NULL) {
         report_serr(*tz, ERR_UNEXP, NT_EXPER, peek(*tz).kind);
         return NULL;
     }
@@ -654,8 +690,9 @@ p_tree *parse_expr(tokenizer *tz, int min_b, arena *a) {
     }
 
     p_tree *root = arena_alloc(a, sizeof(p_tree));
+
     memcpy(root, num1, sizeof(p_tree));
-    p_tree *ct = root;
+
     for (;;) {
         if (!expect(*tz, TOK_OP))
             break;
@@ -664,18 +701,19 @@ p_tree *parse_expr(tokenizer *tz, int min_b, arena *a) {
         if (binding.l < min_b)
             break;
         skip(tz);
-        ct->val = op;
-        ct->kind = TREE_BOP;
+        root->val = op;
+        root->kind = TREE_BOP;
         p_tree *num2 = parse_expr(tz, binding.r, a);
+
         if (num2 == NULL) {
             report_serr(*tz, ERR_UNEXP, NT_EXPER, peek(*tz).kind);
             return NULL;
         }
-        ct->nodes[0] = num1;
-        ct->nodes[1] = num2;
-        num1 = arena_alloc(&p_arena, sizeof(p_tree));
-        memcpy(num1, num2, sizeof(p_tree));
-        ct = num2;
+
+        root->nodes[0] = num1;
+        root->nodes[1] = num2;
+        num1 = arena_alloc(a, sizeof(p_tree));
+        memcpy(num1, root, sizeof(p_tree));
     }
     return root;
 }
