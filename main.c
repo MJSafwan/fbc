@@ -107,11 +107,9 @@ var_table gvar_table = {0};
 pair op_bind[128] = {
     ['+'] = (pair){2, 3},
     ['-'] = (pair){2, 3},
-    ['%'] = (pair){3, 4},
-    ['*'] = (pair){5, 6},
-    ['&'] = (pair){3, 4},
-    ['|'] = (pair){2, 3},
-    ['/'] = (pair){5, 6},
+    ['*'] = (pair){4, 5},
+    ['/'] = (pair){4, 5},
+    ['^'] = (pair){6, 7},
 };
 
 pair lop_bind[128] = {
@@ -380,13 +378,8 @@ eval_type eval_bop(p_tree *root, var_table *table) {
             }
             return NUM_LIT(num1 / num2);
           }
-        case '%': {
-            if (num2 == 0) {
-                printf("Zero cannot be a modulus\n");
-                return NULL_LIT;
-            }
-            return NUM_LIT((int)num1 % (int)num2);
-          }
+        case '^': 
+            return NUM_LIT(pow(num1, num2));
        default:
                   return NULL_LIT;
     }
