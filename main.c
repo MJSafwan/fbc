@@ -60,7 +60,6 @@ typedef struct {
     int type;
     union {
         double num;
-        char *str;
         p_tree *lambda;
     };
 } eval_type;
@@ -264,7 +263,7 @@ token peek(tokenizer tkzer) {
 
 int exp_type(eval_type t, int target) {
     if (t.type != target) {
-        printf("Expected %s, got %s\n", tstr[target], tstr[t.type]);
+        //printf("Expected %s, got %s\n", tstr[target], tstr[t.type]);
         return 0;
     }
     return 1;
@@ -301,12 +300,15 @@ eval_type get_var(char *name, int *exists, var_table *table) {
     return NULL_LIT;
 }
 
-eval_type assign(char *name, eval_type val, var_table *table) {
+
+/* All variables are bound to a lambda type */
+eval_type assign(char *name, p_tree *val, var_table *table) {
     int exists = -1;
     get_var(name, &exists, table);
     if (exists >= 0) {
-        table->items[exists].val = val;
-        return val;
+        table->items[exists].val.lambda = val;
+        table->items[exists].val.type = T_LAMBDA;
+        return eval(val, table);
     }
 
     if (table->count >= table->capacity) {
@@ -315,15 +317,15 @@ eval_type assign(char *name, eval_type val, var_table *table) {
         xassert(table->items, "Out of memory!\n");
     }
 
-    table->items[table->count].val = val;
+    table->items[table->count].val.lambda = val;
     table->items[table->count].name = name;
     table->count++;
-    return val;
+    return eval(val, table);
 }
 
 
 eval_type eval_assign(p_tree *root, var_table *table) {
-    return assign(root->nodes[0]->val.name, eval(root->nodes[1], table), table);    
+    return assign(root->nodes[0]->val.name, root->nodes[1], table);    
 }
 
 eval_type eval_var(p_tree *root, var_table *table) {
@@ -331,7 +333,7 @@ eval_type eval_var(p_tree *root, var_table *table) {
     eval_type val = get_var(root->val.name, &exists, table);    
     if (exists < 0)
         return NULL_LIT;
-    return val;
+    return eval(val.lambda, table);
 }
 
 eval_type eval_uop(p_tree *root, var_table *table) {
@@ -409,106 +411,6 @@ eval_type eval_func(p_tree *root, var_table *table) {
     eval_type t = eval(root->lambda, table_cpy);
     arena_pop(&lambda_arena);
     return t;
-
-#if 0
-    int argc = 0;
-    p_tree **argv = root->nodes;
-    for (argc = 0; argv[argc] != NULL; ++argc);
-    char *name = root->val.name;
-
-    /* 'Meta' functions */
-
-    if (strcmp(name, "clear") == 0) {
-        system("clear");
-        return NULL_LIT;
-    }
-
-    if (strcmp(name, "exit") == 0) {
-        eval_type code = NUM_LIT(0);
-        if (argc >= 1) {
-            code = eval(argv[0], table);
-        }
-
-        exit((int)code.num);
-        // return code;
-    }
-
-    /* Math functions */
-    if (strcmp(name, "sin") == 0) {
-        if (!exp_argc(argc, 1))
-            return NULL_LIT;
-        eval_type num1 = eval(argv[0], table);
-        if (!exp_type(num1, T_NUM))
-            return NULL_LIT;
-        return NUM_LIT(sinf(eval(argv[0], table).num));
-    }
-
-    if (strcmp(name, "cos") == 0) {
-        if (!exp_argc(argc, 1))
-            return NULL_LIT;
-
-        eval_type num1 = eval(argv[0], table);
-        if (!exp_type(num1, T_NUM))
-            return NULL_LIT;
-        return NUM_LIT(cosf(eval(argv[0], table).num));
-    }
-
-    if (strcmp(name, "pow") == 0) {
-        if (!exp_argc(argc, 2))
-            return NULL_LIT;
-
-        eval_type n1 = eval(argv[0], table);
-        if (!exp_type(n1, T_NUM))
-            return NULL_LIT;
-        eval_type n2 = eval(argv[1], table);
-        if (!exp_type(n2, T_NUM))
-            return NULL_LIT;
-
-        if (n1.num == 0 && n2.num == 0)
-            return NUM_LIT(1); /* Spicey! */
-
-        return NUM_LIT(pow(n1.num, n2.num));
-    }
-
-    if (strcmp(name, "exp") == 0) {
-        if (!exp_argc(argc, 1))
-            return NULL_LIT;
-
-        eval_type n1 = eval(argv[0], table);
-        if (!exp_type(n1, T_NUM))
-            return NULL_LIT;
-        return NUM_LIT(exp(n1.num));
-    }
-
-    if (strcmp(name, "ln") == 0) {
-        if (argc != 1)
-            return NULL_LIT; 
-        if (argc != 1)
-            return NULL_LIT; 
-        eval_type n1 = eval(argv[0], table);
-        if (!exp_type(n1, T_NUM)) 
-            return NULL_LIT;
-
-        if (n1.num <= 0) {
-            printf("Cannot take the log of a non-positive number\n");
-            return NULL_LIT;
-        }
-
-        return NUM_LIT(log(n1.num));
-    }
-
-    if (strcmp(name, "choice") == 0) {
-        if (argc == 0)
-            return NULL_LIT;
-        if (argc == 1)
-            return eval(argv[0], table);
-        int c = rand() % argc;
-        /* Lazy eval */
-        return eval(argv[c], table);
-    }
-
-    return NULL_LIT;
-#endif
 }
 
 eval_type eval(p_tree *root, var_table *table) {
@@ -551,6 +453,7 @@ p_tree *parse_callable(tokenizer *tz, p_tree *lval, arena *a) {
 
     lambda->nodes[0] = arg1;
 
+    /* We expect one and only one argument */
     if (expect(*tz, TOK_RP)) {
         skip(tz);
         return lambda;
@@ -614,7 +517,7 @@ p_tree *parse_pexpr(tokenizer *tz, int min_b, arena *a) {
             p_tree *eq = arena_alloc(a, sizeof(p_tree));
             memset(eq, 0, sizeof(p_tree));
             p_tree *rval = NULL;
-            if ((rval = (parse_expr(tz, 0, a))) == NULL) {
+            if ((rval = (parse_expr(tz, 0, &lit_arena))) == NULL) {
                 report_serr(*tz);
                 return NULL;
             }
@@ -684,9 +587,6 @@ int main(void) {
     p_arena = arena_init(ARENA_CAP);   // Parse arena. Wiped each iteration.
     lit_arena = arena_init(ARENA_CAP); // Arena for string literals, like the names of variables.
     lambda_arena = arena_init(ARENA_CAP);
-
-    assign("PI", NUM_LIT(M_PI), &gvar_table);
-    assign("E", NUM_LIT(M_E), &gvar_table);
 
     srand(time(NULL));
     for (;;) {
