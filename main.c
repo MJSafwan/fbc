@@ -18,16 +18,46 @@
 #define ARENA_CAP (1024*100)
 #define NODE_CAP 3
 
-#define TOK_INV 0
-#define TOK_NUM 1
-#define TOK_OP 2
-#define TOK_LP 3
-#define TOK_RP 4
-#define TOK_END 5
-#define TOK_ID 6
-#define TOK_COM 7
-#define TOK_EQ 8
-#define TOK_COMMENT 9
+#define TOKS \
+    X(TOK_INV, "INV")\
+    X(TOK_NUM, "Number")\
+    X(TOK_OP, "Operator")\
+    X(TOK_LP, "(")\
+    X(TOK_RP, ")")\
+    X(TOK_END, "EOF")\
+    X(TOK_ID, "Id")\
+    X(TOK_COM, ",")\
+    X(TOK_EQ, "=")\
+    X(TOK_COMMENT, "#")\
+    X(NT_EXPER, "Expression")
+
+#define SERR \
+    X(ERR_UNEXP, "Unexpected token") \
+    X(ERR_CALL,  "Invalid function call")
+
+typedef enum {
+#define X(tok, _) tok,
+TOKS
+#undef X
+} token_kind;
+
+const char *tokstr[] = {
+#define X(tok, name) [tok] = name,
+TOKS
+#undef X
+};
+
+typedef enum {
+#define X(e, _) e,
+SERR
+#undef X
+} err_kind;
+
+const char *serrstr[] = {
+#define X(e, name) [e] = name,
+SERR
+#undef X
+};
 
 #define SEEK_CHAR 0
 #define READ_NUM 1
@@ -50,7 +80,7 @@
 typedef struct p_tree p_tree;
 
 typedef struct {
-    int kind;
+    token_kind kind;
     union {
         double num;
         char *name;
@@ -283,13 +313,21 @@ int exp_argc(int argc, int target) {
     return 1;
 }
 
-void report_serr(tokenizer tz) {
+void report_serr(tokenizer tz, err_kind kind, ...) {
     if (err != 0)
         return;
+    err = 1;
     puts(tz.buff);
     printf("%*s <-- Here\n", tz.cursor, "^");
-    printf("Syntax error!\n");
-    err = 1;
+    puts(serrstr[kind]);
+    va_list l;
+    va_start(l, kind);
+    if (kind == ERR_UNEXP) {
+        int target = va_arg(l, int);
+        int got = va_arg(l, int);
+        printf("Expected '%s', got '%s'\n", tokstr[target], tokstr[got]);
+    }
+    va_end(l);
 }
 
 
@@ -497,11 +535,6 @@ eval_type eval(p_tree *root, var_table *table) {
 p_tree *parse_expr(tokenizer *tz, int min_b, arena *a);
 
 p_tree *parse_callable(tokenizer *tz, p_tree *lval, arena *a) {
-    if (lval == NULL) {
-        report_serr(*tz);
-        return NULL;
-    }
-
     p_tree *lambda = arena_alloc(a, sizeof(p_tree));
     lambda->kind = TREE_FUNC;
     lambda->lambda = lval;
@@ -513,7 +546,7 @@ p_tree *parse_callable(tokenizer *tz, p_tree *lval, arena *a) {
 
     p_tree *arg1 = parse_expr(tz, 0, a);
     if (arg1 == NULL) {
-        report_serr(*tz);
+        report_serr(*tz, ERR_UNEXP, NT_EXPER, peek(*tz).kind);
         return NULL;
     }
 
@@ -525,6 +558,8 @@ p_tree *parse_callable(tokenizer *tz, p_tree *lval, arena *a) {
         return lambda;
     }
 
+    tz->cursor++;
+    report_serr(*tz, ERR_CALL);
     return NULL;
 }
 
@@ -541,11 +576,11 @@ p_tree *parse_pexpr(tokenizer *tz, int min_b, arena *a) {
         skip(tz);
         p_tree *t = parse_expr(tz, 0, a);
         if (t == NULL) {
-            report_serr(*tz);
+            report_serr(*tz, ERR_UNEXP, NT_EXPER, peek(*tz).kind);
             return NULL;
         }
         if (!expect(*tz, TOK_RP)) {
-            report_serr(*tz);
+            report_serr(*tz, ERR_UNEXP, TOK_RP, peek(*tz).kind);
             return NULL;
         }
         skip(tz);
@@ -554,13 +589,9 @@ p_tree *parse_pexpr(tokenizer *tz, int min_b, arena *a) {
             token tok_op = {0};
             next_token(tz, &tok_op);
             pair binding = lop_bind[tok_op.op_id];
-            if (binding.r == 0) {
-                report_serr(*tz);
-                return NULL;
-            }
             p_tree *t = parse_pexpr(tz, min_b, a);
             if (t == NULL) {
-                report_serr(*tz);
+                report_serr(*tz, ERR_UNEXP, NT_EXPER, peek(*tz).kind);
                 return NULL;
             }
             p_tree *op = arena_alloc(a, sizeof(p_tree));
@@ -583,7 +614,7 @@ p_tree *parse_pexpr(tokenizer *tz, int min_b, arena *a) {
             memset(eq, 0, sizeof(p_tree));
             p_tree *rval = NULL;
             if ((rval = (parse_expr(tz, 0, &lit_arena))) == NULL) {
-                report_serr(*tz);
+                report_serr(*tz, ERR_UNEXP, NT_EXPER, peek(*tz).kind);
                 return NULL;
             }
             eq->nodes[0] = lval;
@@ -595,7 +626,6 @@ p_tree *parse_pexpr(tokenizer *tz, int min_b, arena *a) {
         return lval;
     }
 
-    report_serr(*tz);
     return NULL;
 }
 
@@ -607,7 +637,7 @@ p_tree *parse_expr(tokenizer *tz, int min_b, arena *a) {
     if (pk.kind == TOK_COMMENT)
         return NULL;
     if ((num1 = parse_pexpr(tz, min_b, a)) == NULL) {
-        report_serr(*tz);
+        report_serr(*tz, ERR_UNEXP, NT_EXPER, peek(*tz).kind);
         return NULL;
     }
 
@@ -638,7 +668,7 @@ p_tree *parse_expr(tokenizer *tz, int min_b, arena *a) {
         ct->kind = TREE_BOP;
         p_tree *num2 = parse_expr(tz, binding.r, a);
         if (num2 == NULL) {
-            report_serr(*tz);
+            report_serr(*tz, ERR_UNEXP, NT_EXPER, peek(*tz).kind);
             return NULL;
         }
         ct->nodes[0] = num1;
