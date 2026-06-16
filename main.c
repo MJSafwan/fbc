@@ -90,16 +90,7 @@ typedef struct {
     };
 } token;
 
-typedef struct {
-    int type;
-    union {
-        double num;
-        struct {
-            p_tree *lambda;
-            arena as_arena;
-        };
-    };
-} eval_type;
+
 
 typedef struct {
     size_t cursor;
@@ -119,6 +110,17 @@ struct p_tree {
     p_tree *nodes[NODE_CAP];     
 };
 
+typedef struct {
+    int type;
+    union {
+        double num;
+        struct {
+            p_tree *lambda;
+            arena as_arena;
+        };
+    };
+} eval_type;
+
 
 typedef struct {
     char *name;
@@ -135,6 +137,7 @@ typedef struct {
     int l;
     int r;
 } pair;
+
 
 arena p_arena = {0};
 arena lit_arena = {0};
@@ -363,7 +366,8 @@ eval_type assign(p_tree *root, var_table *table, int define) {
         if (define == 0) {
             table->items[exists].val = eval(val, table);
         } else {
-            arena_destroy(&table->items[exists].val.as_arena);
+            /* Very Odd! */
+            //arena_destroy(&table->items[exists].val.as_arena);
             table->items[exists].val.as_arena = as_arena;
             table->items[exists].val.lambda = val;
             table->items[exists].val.type = T_LAMBDA;
@@ -386,9 +390,8 @@ eval_type assign(p_tree *root, var_table *table, int define) {
     }
 
     table->items[table->count].name = name;
-    table->count++;
 
-    return table->items[table->count].val;
+    return table->items[table->count++].val;
 }
 
 
@@ -404,13 +407,15 @@ eval_type eval_define(p_tree *root, var_table *table) {
 eval_type eval_var(p_tree *root, var_table *table) {
     int exists = -1;
     eval_type val = get_var(root->val.name, &exists, table);    
+
     if (exists < 0)
         return NULL_LIT;
     if (val.type == T_NUM) {
         return val;
-    } else if (val.type == T_LAMBDA){
+    } else if (val.type == T_LAMBDA) {
         return eval(val.lambda, table);
     }
+
     return NULL_LIT;
 }
 
@@ -492,16 +497,24 @@ int eval_builtin(char *name, var_table *table, eval_type *ret) {
         eval_type t_cond = get_var("cond", &exists, table);
         int cond = 0;
         if (exists >= 0) {
-            cond = eval(t_cond.lambda, table).num;
+            if (t_cond.type == T_NUM) {
+                cond = t_cond.num;
+            } else {
+                return 1;
+            }
         }
 
         eval_type t_then = get_var("then", &exists, table);
+        if (t_then.type != T_LAMBDA)
+            return 1;
         if (cond != 0 && exists >= 0) {
             *ret = eval(t_then.lambda, table);
             return 1;
         }
 
         eval_type t_else = get_var("else", &exists, table);
+        if (t_else.type != T_LAMBDA)
+            return 1;
         if (cond == 0 && exists >= 0) {
             *ret = eval(t_else.lambda, table);
         }
@@ -642,12 +655,12 @@ p_tree *parse_pexpr(tokenizer *tz, int min_b, arena *a) {
             memset(eq, 0, sizeof(p_tree));
 
             arena as_arena = arena_init(ASSIGN_ARENA);
-            eq->as_arena = as_arena;
             p_tree *rval = NULL;
             if ((rval = (parse_expr(tz, 0, &as_arena))) == NULL) {
                 report_serr(*tz, ERR_UNEXP, NT_EXPER, peek(*tz).kind);
                 return NULL;
             }
+            eq->as_arena = as_arena;
             eq->nodes[0] = lval;
             eq->nodes[1] = rval;
             if (tok_eq.kind == TOK_EQ) {

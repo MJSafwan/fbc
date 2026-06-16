@@ -1,4 +1,16 @@
-# Common math constents
+# Common math Constants
 PI = 3.14159
 E = 2.71828
+
+# Utility functions
+eq : if(cond=(a-b))(then : 0)(else : 1)
+fact : if(cond=x)(then : x*fact(x=x-1))(else : 1)
+exp : E^x
+
+# Approximations for trig functions
+sin : x - (x^3)/(fact(x=3)) + (x^5)/(fact(x=5)) - (x^7)/(fact(x=7)) + (x^11)/(fact(x=11))
+cos : 1 - (x^2)/(fact(x=2)) + (x^4)/(fact(x=4)) - (x^6)/(fact(x=6)) + (x^8)/(fact(x=8))
+tan : sin / cos
+sec : 1 / cos
+csc : 1 / sin
 
