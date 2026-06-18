@@ -756,6 +756,11 @@ eval_type pe_line(char *line) {
             arena_pop(&p_arena);
             return NULL_LIT;
         }
+        if (!expect(tz, TOK_END)) {
+            arena_pop(&p_arena);
+            report_serr(tz, ERR_UNEXP, TOK_END, peek(tz));
+            return NULL_LIT;
+        }
 
         eval_type val = eval(t, &gvar_table);
         arena_pop(&p_arena);
