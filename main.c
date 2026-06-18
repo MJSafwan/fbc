@@ -366,6 +366,7 @@ eval_type assign(p_tree *root, var_table *table, int define) {
         if (define == 0) {
             table->items[exists].val = eval(val, table);
         } else {
+            /* Auto ref counting for bound symbols */
             arena_unref(&table->items[exists].val.as_arena);
             arena_ref(&as_arena);
             table->items[exists].val.as_arena = as_arena;
@@ -605,7 +606,7 @@ p_tree *parse_callable(tokenizer *tz, p_tree *lval, arena *a) {
 
     lambda->nodes[0] = arg1;
 
-    /* We expect one and only one argument */
+    /* We expect only one (or no) argument */
     if (expect(*tz, TOK_RP)) {
         skip(tz);
         return lambda;
