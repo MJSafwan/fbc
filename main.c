@@ -16,7 +16,7 @@
 
 #define BUFF_CAP 256
 #define ARENA_CAP (1024*100)
-#define ASSIGN_ARENA (1024*4)
+#define ASSIGN_ARENA (1024*10)
 #define NODE_CAP 3
 
 #define TOKS \
@@ -366,8 +366,8 @@ eval_type assign(p_tree *root, var_table *table, int define) {
         if (define == 0) {
             table->items[exists].val = eval(val, table);
         } else {
-            /* Very Odd! */
-            //arena_destroy(&table->items[exists].val.as_arena);
+            arena_unref(&table->items[exists].val.as_arena);
+            arena_ref(&as_arena);
             table->items[exists].val.as_arena = as_arena;
             table->items[exists].val.lambda = val;
             table->items[exists].val.type = T_LAMBDA;
@@ -384,6 +384,7 @@ eval_type assign(p_tree *root, var_table *table, int define) {
     if (define == 0) {
         table->items[table->count].val = eval(val, table);
     } else {
+        arena_ref(&as_arena);
         table->items[table->count].val.lambda = val;
         table->items[table->count].val.as_arena = as_arena;
         table->items[table->count].val.type = T_LAMBDA;
@@ -530,22 +531,34 @@ eval_type eval_func(p_tree *root, var_table *table) {
 
     var_table *table_cpy = arena_alloc(&lambda_arena, sizeof(var_table));
     memcpy(table_cpy, table, sizeof(var_table));
-
     table_cpy->items = arena_alloc(&lambda_arena, table->capacity * sizeof(var_entry));
     memcpy(table_cpy->items, table->items, table->capacity * sizeof(var_entry));
-    
+
     char *name = NULL;
     if (root->lambda->val.kind == TOK_ID)
         name = root->lambda->val.name;
 
     p_tree **argv = root->nodes;
     for (int i = 0; argv[i] != NULL; ++i) {
+        if (argv[i]->kind == TREE_DEFINE) {
+            /* Hold the bound arguments */
+            arena_ref(&argv[i]->as_arena);
+        }
         eval(argv[i], table_cpy);
     }
 
     eval_type t = NULL_LIT;
+
     if (!eval_builtin(name, table_cpy, &t))
         t = eval(root->lambda, table_cpy);
+
+    for (int i = 0; argv[i] != NULL; ++i) {
+        if (argv[i]->kind == TREE_DEFINE) {
+            /* Release the bound arguments */
+            arena_unref(&argv[i]->as_arena);
+        }
+    }
+
     arena_pop(&lambda_arena);
     return t;
 }
@@ -642,7 +655,7 @@ p_tree *parse_pexpr(tokenizer *tz, int min_b, arena *a) {
     } else if (expect(*tz, TOK_ID)) {
         token id = {0};
         next_token(tz, &id);     
-        p_tree *lval = arena_alloc(&lit_arena, sizeof(p_tree));
+        p_tree *lval = arena_alloc(a, sizeof(p_tree));
         memset(lval, 0, sizeof(p_tree));
         lval->val = id;
         lval->kind = TREE_VAR;
@@ -651,7 +664,7 @@ p_tree *parse_pexpr(tokenizer *tz, int min_b, arena *a) {
             token tok_eq = {0};
             next_token(tz, &tok_eq);
 
-            p_tree *eq = arena_alloc(&lit_arena, sizeof(p_tree));
+            p_tree *eq = arena_alloc(a, sizeof(p_tree));
             memset(eq, 0, sizeof(p_tree));
 
             arena as_arena = arena_init(ASSIGN_ARENA);

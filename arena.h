@@ -16,9 +16,12 @@ typedef struct {
     uint64_t offset;
     uint64_t mark;
     uint64_t capacity;
+    int ref;
 } arena;
 
 arena arena_init(uint64_t capacity);
+int arena_ref(arena *s);
+int arena_unref(arena *s);
 void *arena_alloc(arena *s, uint64_t size);
 void arena_set_frame(arena *s);
 void arena_pop(arena *s);
@@ -35,10 +38,6 @@ arena arena_init(uint64_t capacity) {
     };
 
     xassert(s.ptr, "Cannot allocate memory of size %llu for arena!\n", capacity);
-    if (s.ptr == NULL) {
-        perror("malloc");
-        exit(1);
-    }
 
     return s;
 }
@@ -65,6 +64,17 @@ void arena_pop(arena *s) {
     if (s->offset == 0) return;
     uint64_t old_fp = ((uint64_t *) ((char*)s->ptr + s->offset))[0];
     s->mark = old_fp;
+}
+
+int arena_ref(arena *s) {
+    return s->ref++;
+}
+int arena_unref(arena *s) {
+    if (--s->ref <= 0) {
+        __builtin_debugtrap();
+        arena_destroy(s);
+    }
+    return s->ref;
 }
 
 void arena_destroy(arena *s) {
