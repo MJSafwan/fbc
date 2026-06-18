@@ -327,7 +327,7 @@ void report_serr(tokenizer tz, err_kind kind, ...) {
         return;
     err = 1;
     puts(tz.buff);
-    printf("%*s <-- Here\n", tz.cursor, "^");
+    printf("%*s <-- Here\n", tz.cursor+1, "^");
     puts(serrstr[kind]);
     va_list l;
     va_start(l, kind);
