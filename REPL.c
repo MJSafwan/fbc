@@ -16,19 +16,51 @@ void eval_file(char *fn) {
     fclose(f);
 }
 
+
+char *strip_string(char *buff) { 
+    int len = strlen(buff);
+    char *res = malloc(len+1);
+    int state = 0;
+
+    int offset = 0;
+    size_t size = 0;
+
+    for (size_t i = 0; i < len; i++) {
+        if (isspace(buff[i]) == 0) {
+            offset = i;
+            break;
+        }
+    }
+
+    for (size_t i = 0; i < len; i++) {
+        if (isspace(buff[len-i-1]) == 0) {
+            size = len-i-offset;
+            break;
+        }
+    }
+
+    for (size_t i = 0; i < size; ++i) {
+        res[i] = buff[offset+i];
+    }
+    res[size] = 0;
+    return res;
+}
+
 int main(void) {
     fbc_init();
     eval_file("std.fbc");
     char *buff = NULL;
+    int cap = 1028;
     for (;;) {
-        buff = realloc(buff, 1028);
-        memset(buff, 0, 1028);
-        fgets(buff, 1027, stdin);
-        buff[strlen(buff)-1] = 0;
+        buff = realloc(buff, cap);
+        memset(buff, 0, cap);
+        fgets(buff, cap-1, stdin);
         if (buff == NULL) /* C-d EOF */
             exit(0);
         
-        eval_type val = fbc_line(buff);
+        char *sbuff = strip_string(buff);
+        eval_type val = fbc_line(sbuff);
+        free(sbuff);
         if (fbc_did_error() > 0) {
             printf("%s", fbc_get_error());
             continue;
