@@ -525,13 +525,13 @@ eval_type eval_func(p_tree *root, var_table *table) {
     if (root->lambda->val.kind == TOK_ID)
         name = root->lambda->val.name;
 
-    p_tree **argv = root->nodes;
-    for (int i = 0; argv[i] != NULL; ++i) {
-        if (argv[i]->kind == TREE_DEFINE) {
-            /* Hold the bound arguments */
-            arena_ref(&argv[i]->as_arena);
+    p_tree *argv = root->nodes[0];
+    arena *as_arena = &argv->as_arena;
+    if (argv != NULL) {
+        if (argv->kind == TREE_DEFINE) {
+            arena_ref(as_arena);
         }
-        eval(argv[i], table_cpy);
+        eval(argv, table_cpy);
     }
 
     eval_type t = NULL_LIT;
@@ -539,11 +539,11 @@ eval_type eval_func(p_tree *root, var_table *table) {
     if (!eval_builtin(name, table_cpy, &t))
         t = eval(root->lambda, table_cpy);
 
-    for (int i = 0; argv[i] != NULL; ++i) {
-        if (argv[i]->kind == TREE_DEFINE) {
-            /* Release the bound arguments */
-            arena_unref(&argv[i]->as_arena);
+    if (argv != NULL) {
+        if (argv->kind == TREE_DEFINE) {
+            arena_unref(as_arena);
         }
+        eval(argv, table_cpy);
     }
 
     arena_pop(&lambda_arena);
