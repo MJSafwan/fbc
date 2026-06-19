@@ -203,7 +203,6 @@ int sstrcmp(sstr s1, sstr s2) {
     return strncmp(s1.ptr+s1.offset, s2.ptr+s2.offset, s1.len);
 }
 
-/* todo: rewrite lexer */
 int next_token(tokenizer *tk, token *out) {
     tk->state = TZ_SEEK;
     
@@ -235,36 +234,11 @@ int next_token(tokenizer *tk, token *out) {
                     return TOK_OP;
                 }
 
-                if (c == '(') {
-                    out->kind = TOK_LP;
-                    tk->cursor++;
-                    return TOK_LP;
-                }
-
-                if (c == ')') {
-                    out->kind = TOK_RP;
-                    tk->cursor++;
-                    return TOK_RP;
-                }
-
-                if (c == ':') {
-                    out->kind = TOK_DEF;
-                    tk->cursor++;
-                    return TOK_DEF;
-                }
-
-                if (c == '=') {
-                    out->kind = TOK_EQ;
-                    tk->cursor++;
-                    return TOK_EQ;
-                }
-
-                if (c == '#') {
-                    out->kind = TOK_COMMENT;
-                    tk->cursor++;
-                    return TOK_COMMENT;
-                }
-
+                if (c == '(') {tk->cursor++;return TOK_LP;}
+                if (c == ')') {tk->cursor++;return TOK_RP;}
+                if (c == ':') {tk->cursor++;return TOK_DEF;}
+                if (c == '=') {tk->cursor++;return TOK_EQ;}
+                if (c == '#') {tk->cursor++;return TOK_COMMENT;}
 
             }
         }
@@ -299,20 +273,24 @@ int next_token(tokenizer *tk, token *out) {
     }
 }
 
-int expect(tokenizer tkzer, int kind) {
+int expect(tokenizer tz, int kind) {
     token next = {0};
-    next_token(&tkzer, &next);
-    return kind == next.kind;
+    return kind == next_token(&tz, &next);
 }
 
-void skip(tokenizer *tkzer) {
+void skip(tokenizer *tz) {
     token next = {0};
-    next_token(tkzer, &next);
+    next_token(tz, &next);
 }
 
-token peek(tokenizer tkzer) {
+int peek(tokenizer tz) {
     token next = {0};
-    next_token(&tkzer, &next);
+    return next_token(&tz, &next);
+}
+
+token peek_whole_token(tokenizer tz) {
+    token next = {0};
+    next_token(&tz, &next);
     return next;
 }
 
@@ -608,7 +586,7 @@ p_tree *parse_callable(tokenizer *tz, p_tree *lval, arena *a) {
 
     p_tree *arg1 = parse_expr(tz, 0, a);
     if (arg1 == NULL) {
-        report_serr(*tz, ERR_UNEXP, NT_EXPER, peek(*tz).kind);
+        report_serr(*tz, ERR_UNEXP, NT_EXPER, peek(*tz));
         return NULL;
     }
 
@@ -638,11 +616,11 @@ p_tree *parse_pexpr(tokenizer *tz, int min_b, arena *a) {
         skip(tz);
         p_tree *t = parse_expr(tz, 0, a);
         if (t == NULL) {
-            report_serr(*tz, ERR_UNEXP, NT_EXPER, peek(*tz).kind);
+            report_serr(*tz, ERR_UNEXP, NT_EXPER, peek(*tz));
             return NULL;
         }
         if (!expect(*tz, TOK_RP)) {
-            report_serr(*tz, ERR_UNEXP, TOK_RP, peek(*tz).kind);
+            report_serr(*tz, ERR_UNEXP, TOK_RP, peek(*tz));
             return NULL;
         }
         skip(tz);
@@ -653,7 +631,7 @@ p_tree *parse_pexpr(tokenizer *tz, int min_b, arena *a) {
             pair binding = lop_bind[tok_op.op_id];
             p_tree *t = parse_pexpr(tz, 0, a);
             if (t == NULL) {
-                report_serr(*tz, ERR_UNEXP, NT_EXPER, peek(*tz).kind);
+                report_serr(*tz, ERR_UNEXP, NT_EXPER, peek(*tz));
                 return NULL;
             }
             p_tree *op = arena_alloc(a, sizeof(p_tree));
@@ -679,7 +657,7 @@ p_tree *parse_pexpr(tokenizer *tz, int min_b, arena *a) {
             arena as_arena = arena_init(ASSIGN_ARENA);
             p_tree *rval = NULL;
             if ((rval = (parse_expr(tz, 0, &as_arena))) == NULL) {
-                report_serr(*tz, ERR_UNEXP, NT_EXPER, peek(*tz).kind);
+                report_serr(*tz, ERR_UNEXP, NT_EXPER, peek(*tz));
                 return NULL;
             }
             eq->as_arena = as_arena;
@@ -702,13 +680,13 @@ p_tree *parse_pexpr(tokenizer *tz, int min_b, arena *a) {
 
 p_tree *parse_expr(tokenizer *tz, int min_b, arena *a) {
     p_tree *num1 = NULL;
-    token pk = peek(*tz);
-    if (pk.kind == TOK_END)
+    int pk = peek(*tz);
+    if (pk == TOK_END)
         return NULL;
-    if (pk.kind == TOK_COMMENT)
+    if (pk == TOK_COMMENT)
         return NULL;
     if ((num1 = parse_pexpr(tz, 0, a)) == NULL) {
-        report_serr(*tz, ERR_UNEXP, NT_EXPER, peek(*tz).kind);
+        report_serr(*tz, ERR_UNEXP, NT_EXPER, peek(*tz));
         return NULL;
     }
 
@@ -731,7 +709,7 @@ p_tree *parse_expr(tokenizer *tz, int min_b, arena *a) {
     for (;;) {
         if (!expect(*tz, TOK_OP))
             break;
-        token op = peek(*tz);
+        token op = peek_whole_token(*tz);
         pair binding = op_bind[op.op_id];
         if (binding.l < min_b)
             break;
@@ -741,7 +719,7 @@ p_tree *parse_expr(tokenizer *tz, int min_b, arena *a) {
         p_tree *num2 = parse_expr(tz, binding.r, a);
 
         if (num2 == NULL) {
-            report_serr(*tz, ERR_UNEXP, NT_EXPER, peek(*tz).kind);
+            report_serr(*tz, ERR_UNEXP, NT_EXPER, peek(*tz));
             return NULL;
         }
 
@@ -762,15 +740,6 @@ eval_type pe_line(char *line) {
         tz.buff = line;
         tz.len = bytes_read;
 
-        token p = peek(tz);
-        if (p.kind == TOK_END) {
-            arena_pop(&p_arena);
-            return NULL_LIT;
-        }
-        if (p.kind == TOK_COMMENT) {
-            arena_pop(&p_arena);
-            return NULL_LIT;
-        }
 
         p_tree *t = parse_expr(&tz, 0, &p_arena);
 
