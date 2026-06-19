@@ -696,7 +696,8 @@ p_tree *parse_callable(tokenizer *tz, p_tree *lval, fbc_arena *a) {
 }
 
 p_tree *parse_pexpr(tokenizer *tz, int min_b, fbc_arena *a) {
-    if (expect(*tz, TOK_NUM)) {
+    int tok = peek(*tz);
+    if (tok == TOK_NUM) {
         token num = {0};
         next_token(tz, &num);
         p_tree *t = fbc_arena_alloc(a, sizeof(p_tree));
@@ -704,7 +705,7 @@ p_tree *parse_pexpr(tokenizer *tz, int min_b, fbc_arena *a) {
         t->val = num;
         t->kind = TREE_NUM;
         return t;
-    } else if(expect(*tz, TOK_LP)) {
+    } else if(tok == TOK_LP) {
         skip(tz);
         p_tree *t = parse_expr(tz, 0, a);
         if (t == NULL) {
@@ -717,7 +718,7 @@ p_tree *parse_pexpr(tokenizer *tz, int min_b, fbc_arena *a) {
         }
         skip(tz);
         return t;
-    } else if (expect(*tz, TOK_OP)) {
+    } else if (tok == TOK_OP) {
             token tok_op = {0};
             next_token(tz, &tok_op);
             pair binding = lop_bind[tok_op.op_id];
@@ -731,15 +732,16 @@ p_tree *parse_pexpr(tokenizer *tz, int min_b, fbc_arena *a) {
             op->val = tok_op;
             op->nodes[0] = t;
             return op;
-    } else if (expect(*tz, TOK_ID)) {
+    } else if (tok == TOK_ID) {
         token id = {0};
         next_token(tz, &id);     
         p_tree *lval = fbc_arena_alloc(a, sizeof(p_tree));
         memset(lval, 0, sizeof(p_tree));
         lval->val = id;
         lval->kind = TREE_VAR;
+        int id_kind = peek(*tz);
 
-        if (expect(*tz, TOK_EQ) || expect(*tz, TOK_DEF)) {
+        if (id_kind == TOK_EQ || id_kind == TOK_DEF) {
             token tok_eq = {0};
             int tok_val = next_token(tz, &tok_eq);
 
