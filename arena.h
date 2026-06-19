@@ -17,6 +17,7 @@ typedef struct {
     uint64_t mark;
     uint64_t capacity;
     int ref;
+    int free;
 } arena;
 
 arena arena_init(uint64_t capacity);
@@ -79,7 +80,9 @@ int arena_unref(arena *s) {
 }
 
 void arena_destroy(arena *s) {
+    xassert(s->free == 0, "Trying to free a non-free arena!\n");
     free(s->ptr);
+    s->free = 1;
 }
 
 #endif // ARENA_IMPLEMENTATION
