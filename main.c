@@ -60,9 +60,11 @@ SERR
 #undef X
 };
 
-#define SEEK_CHAR 0
-#define READ_NUM 1
-#define READ_ID 2
+#define TZ_SEEK 0
+#define TZ_ACC 1
+
+#define ACC_NUM 0
+#define ACC_ID 1
 
 #define TREE_NUM 0
 #define TREE_BOP 1
@@ -77,14 +79,20 @@ SERR
 #define T_LAMBDA 2
 
 #define NULL_LIT (eval_type){0}
-#define NUM_LIT(d) (eval_type){T_NUM, d}
+#define NUM_LIT(d, p) (eval_type){T_NUM, d, p}
+
+#define MAX(a, b) ((a) < (b) ? b : a)
+#define MIN(a, b) ((a) > (b) ? b : a)
 
 typedef struct p_tree p_tree;
 
 typedef struct {
     token_kind kind;
     union {
-        double num;
+        struct {
+            double num;
+            int perc;
+        };
         char *name;
         char op_id;
     };
@@ -95,7 +103,7 @@ typedef struct {
 typedef struct {
     size_t cursor;
     int state;
-    const char *buff;
+    char *buff;
     size_t len;
 } tokenizer;
 
@@ -113,7 +121,10 @@ struct p_tree {
 typedef struct {
     int type;
     union {
-        double num;
+        struct {
+            double num;
+            int perc;
+        };
         struct {
             p_tree *lambda;
             arena as_arena;
@@ -169,33 +180,53 @@ int is_op(char c) {
     return op_bind[c].r > 0 || lop_bind[c].r > 0;
 }
 
-int is_num(char c) {
-    return c >= '0' && c <= '9';
+typedef struct {
+    char *ptr;
+    size_t offset;
+    size_t len;
+} sstr;
+
+char *sstrdup(sstr s, arena *a) {
+    char *cpy = NULL;
+    if (a == NULL)
+        cpy = malloc(s.len+1);
+    else
+        cpy = arena_alloc(a, s.len+1);
+    memcpy(cpy, s.ptr+s.offset, s.len);
+    cpy[s.len] = 0;
+    return cpy;
 }
 
+int sstrcmp(sstr s1, sstr s2) {
+    if (s1.len != s2.len)
+        return -1;
+    return strncmp(s1.ptr+s1.offset, s2.ptr+s2.offset, s1.len);
+}
 
+/* todo: rewrite lexer */
 int next_token(tokenizer *tk, token *out) {
-    tk->state = SEEK_CHAR;
+    tk->state = TZ_SEEK;
     
-    char *s = NULL;
-    int offset = 0;
-    int floating = 0;
+    sstr s = {0};
+    int perc = -1;
+    int acc = 0;
     for (;;) {
+        char c = tk->buff[tk->cursor];
+
         if (tk->cursor >= tk->len) {
             out->kind = TOK_END;
             return TOK_END; 
         }
 
-        if (tk->state == SEEK_CHAR) {
-            char c = tk->buff[tk->cursor];
+        if (tk->state == TZ_SEEK) {
             if (isspace(c) == 0) {
-                if (is_num(c) == 1) {
-                    s = arena_alloc(&p_arena, tk->len);
-                    strncpy(s, tk->buff, tk->len);
-                    tk->state = READ_NUM;
-                    offset = tk->cursor;
-                }
 
+                if (isalnum(c) == 1) {
+                    s.ptr = tk->buff;
+                    s.offset = tk->cursor;
+                    tk->state = TZ_ACC;
+                    if (isdigit(c) != 0) acc = ACC_NUM; else acc = ACC_ID;
+                }
 
                 if (is_op(c) == 1) {
                     out->kind = TOK_OP;
@@ -234,55 +265,34 @@ int next_token(tokenizer *tk, token *out) {
                     return TOK_COMMENT;
                 }
 
-                if (isalpha(c) == 1) {
-                    s = arena_alloc(&lit_arena, tk->len);
-                    strncpy(s, tk->buff, tk->len);
-                    tk->state = READ_ID;
-                    offset = tk->cursor;
-                }
+
             }
         }
 
-        if (tk->state == READ_NUM) {
-            out->kind = TOK_NUM;
-            char c = tk->buff[tk->cursor];
-
-
-            if (!is_num(c)) {
-                if (c == '.') {
-                    floating = 1;
-                    s[tk->cursor] = 0;
-                    out->num = atoi(&s[offset]);
+        if (tk->state == TZ_ACC) {
+            if (acc == ACC_NUM) {
+                if (isdigit(c) == 0 && c != '.') {
+                    char *tmp = sstrdup(s, NULL);
+                    out->num = atof(tmp);
+                    out->perc = perc < 0 ? 0 : perc;
                     out->kind = TOK_NUM;
-                    tk->cursor++;
-                    continue;
-                }
-                if (floating >= 1) {
+                    free(tmp);
                     return TOK_NUM;
+                } else if (perc >= 0) {
+                    perc++;
                 }
-                s[tk->cursor] = 0;
-                out->num = atoi(&s[offset]);
-                out->kind = TOK_NUM;
-                return TOK_NUM;
-            }
 
-            if (floating >= 1) {
-                out->num += (c - '0') / pow(10, floating);
-                floating++;
-                tk->cursor++;
-                continue;
+                if (perc < 0 && c == '.')
+                    perc = 0;
             }
-        }
-
-        if (tk->state == READ_ID) {
-            out->kind = TOK_ID;
-            char c = tk->buff[tk->cursor];
-            if (!isalnum(c) && c != '_') {
-                s[tk->cursor] = 0;
-                out->name = &s[offset];
-                out->kind = TOK_ID;
-                return TOK_ID;
+            if (acc == ACC_ID) {
+                if (isalnum(c) == 0 && c != '_') {
+                    out->name = sstrdup(s, &lit_arena);
+                    out->kind = TOK_ID;
+                    return TOK_ID;
+                }
             }
+            s.len++;
         }
 
         tk->cursor++;
@@ -327,7 +337,7 @@ void report_serr(tokenizer tz, err_kind kind, ...) {
         return;
     err = 1;
     puts(tz.buff);
-    printf("%*s <-- Here\n", tz.cursor+1, "^");
+    printf("%*s <-- Here\n", (int)tz.cursor+1, "^");
     puts(serrstr[kind]);
     va_list l;
     va_start(l, kind);
@@ -427,46 +437,44 @@ eval_type eval_uop(p_tree *root, var_table *table) {
         return NULL_LIT;
     switch (root->val.op_id) {
         case '-':
-            return NUM_LIT(-num1.num);
+            return NUM_LIT(-num1.num, num1.perc);
         case '~':
-            return NUM_LIT(~((int)num1.num));
+            return NUM_LIT(~((int)num1.num), 0);
        default:
             return NULL_LIT;
     }
 }
 
 eval_type eval_bop(p_tree *root, var_table *table) {
-    eval_type t_num1 = eval(root->nodes[0], table);
-    if (!exp_type(t_num1, T_NUM)) {
+    eval_type num1 = eval(root->nodes[0], table);
+    if (!exp_type(num1, T_NUM)) {
         return NULL_LIT;
     }
-    eval_type t_num2 = eval(root->nodes[1], table);
-    if (!exp_type(t_num2, T_NUM)) {
+    eval_type num2 = eval(root->nodes[1], table);
+    if (!exp_type(num2, T_NUM)) {
         return NULL_LIT;
     }
 
-    double num1 = t_num1.num;
-    double num2 = t_num2.num;
     switch (root->val.op_id) {
         case '+':
-            return NUM_LIT(num1 + num2);
+            return NUM_LIT(num1.num + num2.num, MAX(num1.perc, num2.perc));
         case '&':
-            return NUM_LIT((int)num1 & (int)num2);
+            return NUM_LIT((int)num1.num & (int)num2.num, 0);
         case '|':
-            return NUM_LIT((int)num1 | (int)num2);
+            return NUM_LIT((int)num1.num | (int)num2.num, 0);
         case '*':
-            return NUM_LIT(num1 * num2);
+            return NUM_LIT(num1.num * num2.num, MIN(num1.perc, num2.perc));
         case '-':
-            return NUM_LIT(num1 - num2);
+            return NUM_LIT(num1.num - num2.num, MAX(num1.perc, num2.perc));
         case '/': {
-            if (num2 == 0) {
+            if (num2.num == 0) {
                 printf("Cannot divide by zero\n");
                 return NULL_LIT;
             }
-            return NUM_LIT(num1 / num2);
+            return NUM_LIT(num1.num / num2.num, MIN(num1.perc, num2.perc));
           }
         case '^': 
-            return NUM_LIT(pow(num1, num2));
+            return NUM_LIT(pow(num1.num, num2.num), MIN(num1.perc, num2.perc));
        default:
                   return NULL_LIT;
     }
@@ -567,7 +575,7 @@ eval_type eval_func(p_tree *root, var_table *table) {
 eval_type eval(p_tree *root, var_table *table) {
     switch (root->kind) {
         case TREE_NUM:
-            return NUM_LIT(root->val.num);
+            return NUM_LIT(root->val.num, root->val.perc);
         case TREE_BOP:
             return eval_bop(root, table);
         case TREE_UOP:
@@ -810,7 +818,7 @@ int main(void) {
         
         eval_type val = pe_line(buff);
         if (val.type == T_NUM)
-            printf("%f\n", val.num);
+            printf("%.*f\n", val.perc, val.num);
     }
     return 0;
 }
