@@ -441,7 +441,7 @@ eval_type eval_bop(p_tree *root, var_table *table) {
         case '|':
             return NUM_LIT((int)num1.num | (int)num2.num, 0);
         case '*':
-            return NUM_LIT(num1.num * num2.num, MIN(num1.perc, num2.perc));
+            return NUM_LIT(num1.num * num2.num, MAX(num1.perc, num2.perc));
         case '-':
             return NUM_LIT(num1.num - num2.num, MAX(num1.perc, num2.perc));
         case '/': {
@@ -449,10 +449,10 @@ eval_type eval_bop(p_tree *root, var_table *table) {
                 printf("Cannot divide by zero\n");
                 return NULL_LIT;
             }
-            return NUM_LIT(num1.num / num2.num, MIN(num1.perc, num2.perc));
+            return NUM_LIT(num1.num / num2.num, MAX(num1.perc, num2.perc));
           }
         case '^': 
-            return NUM_LIT(pow(num1.num, num2.num), MIN(num1.perc, num2.perc));
+            return NUM_LIT(pow(num1.num, num2.num), MAX(num1.perc, num2.perc));
        default:
                   return NULL_LIT;
     }
