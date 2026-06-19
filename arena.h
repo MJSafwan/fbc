@@ -71,7 +71,6 @@ int arena_ref(arena *s) {
 }
 int arena_unref(arena *s) {
     if (--s->ref <= 0) {
-        __builtin_debugtrap();
         arena_destroy(s);
     }
     return s->ref;
