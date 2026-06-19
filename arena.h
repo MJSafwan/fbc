@@ -67,8 +67,9 @@ void arena_pop(arena *s) {
 }
 
 int arena_ref(arena *s) {
-    return s->ref++;
+    return ++s->ref;
 }
+
 int arena_unref(arena *s) {
     if (--s->ref == 0) {
         arena_destroy(s);

@@ -346,7 +346,6 @@ eval_type get_var(char *name, int *exists, var_table *table) {
 eval_type assign(p_tree *root, var_table *table, int define) {
     char *name = root->nodes[0]->val.name;
     p_tree *val = root->nodes[1];
-    arena as_arena = root->as_arena;
 
     int exists = -1;
     get_var(name, &exists, table);
@@ -356,8 +355,8 @@ eval_type assign(p_tree *root, var_table *table, int define) {
         } else {
             /* Auto ref counting for bound symbols */
             arena_unref(&table->items[exists].val.as_arena);
-            arena_ref(&as_arena);
-            table->items[exists].val.as_arena = as_arena;
+            arena_ref(&root->as_arena);
+            table->items[exists].val.as_arena = root->as_arena;
             table->items[exists].val.lambda = val;
             table->items[exists].val.type = T_LAMBDA;
         }
@@ -373,9 +372,9 @@ eval_type assign(p_tree *root, var_table *table, int define) {
     if (define == 0) {
         table->items[table->count].val = eval(val, table);
     } else {
-        arena_ref(&as_arena);
+        arena_ref(&root->as_arena);
         table->items[table->count].val.lambda = val;
-        table->items[table->count].val.as_arena = as_arena;
+        table->items[table->count].val.as_arena = root->as_arena;
         table->items[table->count].val.type = T_LAMBDA;
     }
 
@@ -486,7 +485,7 @@ int eval_builtin(char *name, var_table *table, eval_type *ret) {
         int cond = 0;
         if (exists >= 0) {
             if (t_cond.type == T_NUM) {
-                cond = t_cond.num;
+                cond = (int)t_cond.num;
             } else {
                 return 1;
             }
@@ -649,7 +648,7 @@ p_tree *parse_pexpr(tokenizer *tz, int min_b, arena *a) {
 
         if (expect(*tz, TOK_EQ) || expect(*tz, TOK_DEF)) {
             token tok_eq = {0};
-            next_token(tz, &tok_eq);
+            int tok_val = next_token(tz, &tok_eq);
 
             p_tree *eq = arena_alloc(a, sizeof(p_tree));
             memset(eq, 0, sizeof(p_tree));
@@ -663,7 +662,7 @@ p_tree *parse_pexpr(tokenizer *tz, int min_b, arena *a) {
             eq->as_arena = as_arena;
             eq->nodes[0] = lval;
             eq->nodes[1] = rval;
-            if (tok_eq.kind == TOK_EQ) {
+            if (tok_val == TOK_EQ) {
                 eq->kind = TREE_ASSIGN;
             } else {
                 eq->kind = TREE_DEFINE;
