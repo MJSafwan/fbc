@@ -4,15 +4,21 @@
 #include <string.h>
 #include <ctype.h>
 #include <math.h>
-#include <editline.h>
 #include <time.h>
 #include <stdarg.h>
 #include <errno.h>
 
-#include "xassert.h"
+#ifndef FBC_H_
+#define FBC_H_
 
-#define ARENA_IMPLEMENTATION
-#include "arena.h"
+#ifndef xassert
+#define xassert(cond, msg, ...) \
+    if (!(cond)) {\
+        printf("%s:%s:%d Assersion failed: ", __FILE__, __func__, __LINE__);\
+        printf(msg,##__VA_ARGS__);\
+        __builtin_debugtrap();\
+    }
+#endif
 
 #define BUFF_CAP 256
 #define ARENA_CAP (1024*100)
@@ -35,6 +41,32 @@
 #define SERR \
     X(ERR_UNEXP, "Unexpected token") \
     X(ERR_CALL,  "Invalid function call")
+
+#define TZ_SEEK 0
+#define TZ_ACC 1
+
+#define ACC_NUM 0
+#define ACC_ID 1
+
+#define TREE_NUM 0
+#define TREE_BOP 1
+#define TREE_UOP 2
+#define TREE_FUNC 3
+#define TREE_VAR 4
+#define TREE_ASSIGN 5
+#define TREE_DEFINE 6
+
+#define T_NULL 0
+#define T_NUM 1
+#define T_LAMBDA 2
+
+#define NULL_LIT (eval_type){0}
+#define NUM_LIT(d, p) (eval_type){T_NUM, d, p}
+
+
+#define FBC_MAX(a, b) ((a) < (b) ? b : a)
+
+#define STACK_ALIGNMENT 16
 
 typedef enum {
 #define X(tok, _) tok,
@@ -60,29 +92,14 @@ SERR
 #undef X
 };
 
-#define TZ_SEEK 0
-#define TZ_ACC 1
-
-#define ACC_NUM 0
-#define ACC_ID 1
-
-#define TREE_NUM 0
-#define TREE_BOP 1
-#define TREE_UOP 2
-#define TREE_FUNC 3
-#define TREE_VAR 4
-#define TREE_ASSIGN 5
-#define TREE_DEFINE 6
-
-#define T_NULL 0
-#define T_NUM 1
-#define T_LAMBDA 2
-
-#define NULL_LIT (eval_type){0}
-#define NUM_LIT(d, p) (eval_type){T_NUM, d, p}
-
-#define MAX(a, b) ((a) < (b) ? b : a)
-#define MIN(a, b) ((a) > (b) ? b : a)
+typedef struct {
+    void    *ptr;
+    uint64_t offset;
+    uint64_t mark;
+    uint64_t capacity;
+    int ref;
+    int free;
+} fbc_arena;
 
 typedef struct p_tree p_tree;
 
@@ -98,8 +115,6 @@ typedef struct {
     };
 } token;
 
-
-
 typedef struct {
     size_t cursor;
     int state;
@@ -107,12 +122,11 @@ typedef struct {
     size_t len;
 } tokenizer;
 
-
 struct p_tree {
     int kind;
     union {
         token val;
-        arena as_arena;
+        fbc_arena as_fbc_arena;
         p_tree *lambda;
     };
     p_tree *nodes[NODE_CAP];     
@@ -127,7 +141,7 @@ typedef struct {
         };
         struct {
             p_tree *lambda;
-            arena as_arena;
+            fbc_arena as_fbc_arena;
         };
     };
 } eval_type;
@@ -149,10 +163,17 @@ typedef struct {
     int r;
 } pair;
 
+void fbc_init(void);
+eval_type fbc_line(char *line);
+int fbc_did_error();
+char *fbc_get_error();
 
-arena p_arena = {0};
-arena lit_arena = {0};
-int err = 0;
+#ifdef FBC_IMPLEMENTATION
+
+char *serr_str = NULL;
+fbc_arena p_fbc_arena = {0};
+fbc_arena lit_fbc_arena = {0};
+int fbc_err = 0;
 
 var_table gvar_table = {0};
 
@@ -169,12 +190,82 @@ pair lop_bind[128] = {
   ['~'] = (pair){0, 1},
 };
 
-const char *prompt = "> ";
-
 const char *tstr[] = {
     [T_NUM] = "Number",
     [T_NULL] = "Null",
 };
+
+int fbc_did_error() {
+    return fbc_err;
+}
+
+char *fbc_get_error() {
+    return serr_str;
+}
+
+
+fbc_arena fbc_arena_init(uint64_t capacity);
+int fbc_arena_ref(fbc_arena *s);
+int fbc_arena_unref(fbc_arena *s);
+void *fbc_arena_alloc(fbc_arena *s, uint64_t size);
+void fbc_arena_set_frame(fbc_arena *s);
+void fbc_arena_pop(fbc_arena *s);
+void fbc_arena_destroy(fbc_arena *s);
+
+fbc_arena fbc_arena_init(uint64_t capacity) {
+    fbc_arena s = {
+        .ptr = malloc(capacity),
+        .capacity = capacity,
+        .mark = 0,
+        .offset = 0,
+    };
+
+    xassert(s.ptr, "Cannot allocate memory of size %llu for fbc_arena!\n", capacity);
+
+    return s;
+}
+
+void *fbc_arena_alloc(fbc_arena *s, uint64_t size) {
+    xassert(size, "Trying to allocate memory of size zero!\n"); 
+
+    size += size % STACK_ALIGNMENT == 0 ? 0 : (STACK_ALIGNMENT - size % STACK_ALIGNMENT);
+    xassert(s->offset+size <= s->capacity, "Allocation of %llu bytes is out of the bounds of fbc_arena %p!\n", size, s);   
+    uint64_t offset = s->offset;
+    s->offset += size;
+    return (char *)(s->ptr) + offset;
+}
+
+void fbc_arena_set_frame(fbc_arena *s) {
+    uint64_t offset = s->offset;
+    uint64_t *old_fp = fbc_arena_alloc(s, sizeof(uint64_t));
+    old_fp[0] = s->mark;
+    s->mark = offset;
+}
+
+void fbc_arena_pop(fbc_arena *s) {
+    s->offset = s->mark;
+    if (s->offset == 0) return;
+    uint64_t old_fp = ((uint64_t *) ((char*)s->ptr + s->offset))[0];
+    s->mark = old_fp;
+}
+
+int fbc_arena_ref(fbc_arena *s) {
+    return ++s->ref;
+}
+
+int fbc_arena_unref(fbc_arena *s) {
+    xassert(s->ref > 0, "Arena wasn't referenced!\n");
+    if (--s->ref == 0) {
+        fbc_arena_destroy(s);
+    }
+    return s->ref;
+}
+
+void fbc_arena_destroy(fbc_arena *s) {
+    xassert(s->free == 0, "Trying to free a non-free fbc_arena!\n");
+    free(s->ptr);
+    s->free = 1;
+}
 
 int is_op(char c) {
     return op_bind[c].r > 0 || lop_bind[c].r > 0;
@@ -186,21 +277,15 @@ typedef struct {
     size_t len;
 } sstr;
 
-char *sstrdup(sstr s, arena *a) {
+char *sstrdup(sstr s, fbc_arena *a) {
     char *cpy = NULL;
     if (a == NULL)
         cpy = malloc(s.len+1);
     else
-        cpy = arena_alloc(a, s.len+1);
+        cpy = fbc_arena_alloc(a, s.len+1);
     memcpy(cpy, s.ptr+s.offset, s.len);
     cpy[s.len] = 0;
     return cpy;
-}
-
-int sstrcmp(sstr s1, sstr s2) {
-    if (s1.len != s2.len)
-        return -1;
-    return strncmp(s1.ptr+s1.offset, s2.ptr+s2.offset, s1.len);
 }
 
 int next_token(tokenizer *tk, token *out) {
@@ -261,7 +346,7 @@ int next_token(tokenizer *tk, token *out) {
             }
             if (acc == ACC_ID) {
                 if (isalnum(c) == 0 && c != '_') {
-                    out->name = sstrdup(s, &lit_arena);
+                    out->name = sstrdup(s, &lit_fbc_arena);
                     out->kind = TOK_ID;
                     return TOK_ID;
                 }
@@ -302,27 +387,30 @@ int exp_type(eval_type t, int target) {
     return 1;
 }
 
-int exp_argc(int argc, int target) {
-    if (argc != target) {
-        printf("Expected %d argument(s), got %d\n", target, argc);
-        return 0;
-    }
-    return 1;
-}
-
 void report_serr(tokenizer tz, err_kind kind, ...) {
-    if (err != 0)
+    if (fbc_err != 0)
         return;
-    err = 1;
+    fbc_err = 1;
+#ifdef FBC_PRINT_SERR
     puts(tz.buff);
     printf("%*s <-- Here\n", (int)tz.cursor+1, "^");
     puts(serrstr[kind]);
+#else
+    serr_str = realloc(serr_str, 256);
+    int off = snprintf(serr_str, 256, "%s\n", tz.buff);
+    off += snprintf(serr_str+off, 256-off, "%*s <-- Here\n", (int)tz.cursor+1, "^");
+    off += snprintf(serr_str+off, 256-off, "%s\n", serrstr[kind]);
+#endif
     va_list l;
     va_start(l, kind);
     if (kind == ERR_UNEXP) {
         int target = va_arg(l, int);
         int got = va_arg(l, int);
+#ifdef FBC_PRINT_SERR
         printf("Expected '%s', got '%s'\n", tokstr[target], tokstr[got]);
+#else
+        off += snprintf(serr_str+off, 256-off, "Expected '%s', got '%s'\n", tokstr[target], tokstr[got]);
+#endif
     }
     va_end(l);
 }
@@ -342,7 +430,6 @@ eval_type get_var(char *name, int *exists, var_table *table) {
     return NULL_LIT;
 }
 
-
 eval_type assign(p_tree *root, var_table *table, int define) {
     char *name = root->nodes[0]->val.name;
     p_tree *val = root->nodes[1];
@@ -354,9 +441,9 @@ eval_type assign(p_tree *root, var_table *table, int define) {
             table->items[exists].val = eval(val, table);
         } else {
             /* Auto ref counting for bound symbols */
-            arena_unref(&table->items[exists].val.as_arena);
-            arena_ref(&root->as_arena);
-            table->items[exists].val.as_arena = root->as_arena;
+            fbc_arena_unref(&table->items[exists].val.as_fbc_arena);
+            fbc_arena_ref(&root->as_fbc_arena);
+            table->items[exists].val.as_fbc_arena = root->as_fbc_arena;
             table->items[exists].val.lambda = val;
             table->items[exists].val.type = T_LAMBDA;
         }
@@ -372,9 +459,9 @@ eval_type assign(p_tree *root, var_table *table, int define) {
     if (define == 0) {
         table->items[table->count].val = eval(val, table);
     } else {
-        arena_ref(&root->as_arena);
+        fbc_arena_ref(&root->as_fbc_arena);
         table->items[table->count].val.lambda = val;
-        table->items[table->count].val.as_arena = root->as_arena;
+        table->items[table->count].val.as_fbc_arena = root->as_fbc_arena;
         table->items[table->count].val.type = T_LAMBDA;
     }
 
@@ -434,30 +521,36 @@ eval_type eval_bop(p_tree *root, var_table *table) {
 
     switch (root->val.op_id) {
         case '+':
-            return NUM_LIT(num1.num + num2.num, MAX(num1.perc, num2.perc));
+            return NUM_LIT(num1.num + num2.num, FBC_MAX(num1.perc, num2.perc));
         case '&':
             return NUM_LIT((int)num1.num & (int)num2.num, 0);
         case '|':
             return NUM_LIT((int)num1.num | (int)num2.num, 0);
         case '*':
-            return NUM_LIT(num1.num * num2.num, MAX(num1.perc, num2.perc));
+            return NUM_LIT(num1.num * num2.num, FBC_MAX(num1.perc, num2.perc));
         case '-':
-            return NUM_LIT(num1.num - num2.num, MAX(num1.perc, num2.perc));
+            return NUM_LIT(num1.num - num2.num, FBC_MAX(num1.perc, num2.perc));
         case '/': {
             if (num2.num == 0) {
+#ifdef FBC_PRINT_SERR
                 printf("Cannot divide by zero\n");
+#else
+                serr_str = realloc(serr_str, 256);
+                snprintf(serr_str, 256, "Cannot divide by zero\n");
+                fbc_err = 1;
+#endif
                 return NULL_LIT;
             }
-            return NUM_LIT(num1.num / num2.num, MAX(num1.perc, num2.perc));
+            return NUM_LIT(num1.num / num2.num, FBC_MAX(num1.perc, num2.perc));
           }
         case '^': 
-            return NUM_LIT(pow(num1.num, num2.num), MAX(num1.perc, num2.perc));
+            return NUM_LIT(pow(num1.num, num2.num), FBC_MAX(num1.perc, num2.perc));
        default:
                   return NULL_LIT;
     }
 }
 
-arena lambda_arena = {0};
+fbc_arena lambda_fbc_arena = {0};
 
 int eval_builtin(char *name, var_table *table, eval_type *ret) {
 
@@ -513,11 +606,11 @@ int eval_builtin(char *name, var_table *table, eval_type *ret) {
 
 eval_type eval_func(p_tree *root, var_table *table) {
 
-    arena_set_frame(&lambda_arena);
+    fbc_arena_set_frame(&lambda_fbc_arena);
 
-    var_table *table_cpy = arena_alloc(&lambda_arena, sizeof(var_table));
+    var_table *table_cpy = fbc_arena_alloc(&lambda_fbc_arena, sizeof(var_table));
     memcpy(table_cpy, table, sizeof(var_table));
-    table_cpy->items = arena_alloc(&lambda_arena, table->capacity * sizeof(var_entry));
+    table_cpy->items = fbc_arena_alloc(&lambda_fbc_arena, table->capacity * sizeof(var_entry));
     memcpy(table_cpy->items, table->items, table->capacity * sizeof(var_entry));
 
     char *name = NULL;
@@ -525,10 +618,10 @@ eval_type eval_func(p_tree *root, var_table *table) {
         name = root->lambda->val.name;
 
     p_tree *argv = root->nodes[0];
-    arena *as_arena = &argv->as_arena;
+    fbc_arena *as_fbc_arena = &argv->as_fbc_arena;
     if (argv != NULL) {
         if (argv->kind == TREE_DEFINE) {
-            arena_ref(as_arena);
+            fbc_arena_ref(as_fbc_arena);
         }
         eval(argv, table_cpy);
     }
@@ -540,12 +633,12 @@ eval_type eval_func(p_tree *root, var_table *table) {
 
     if (argv != NULL) {
         if (argv->kind == TREE_DEFINE) {
-            arena_unref(as_arena);
+            fbc_arena_unref(as_fbc_arena);
         }
         eval(argv, table_cpy);
     }
 
-    arena_pop(&lambda_arena);
+    fbc_arena_pop(&lambda_fbc_arena);
     return t;
 }
 
@@ -571,10 +664,10 @@ eval_type eval(p_tree *root, var_table *table) {
     return NULL_LIT;
 }
 
-p_tree *parse_expr(tokenizer *tz, int min_b, arena *a);
+p_tree *parse_expr(tokenizer *tz, int min_b, fbc_arena *a);
 
-p_tree *parse_callable(tokenizer *tz, p_tree *lval, arena *a) {
-    p_tree *lambda = arena_alloc(a, sizeof(p_tree));
+p_tree *parse_callable(tokenizer *tz, p_tree *lval, fbc_arena *a) {
+    p_tree *lambda = fbc_arena_alloc(a, sizeof(p_tree));
     lambda->kind = TREE_FUNC;
     lambda->lambda = lval;
 
@@ -602,11 +695,11 @@ p_tree *parse_callable(tokenizer *tz, p_tree *lval, arena *a) {
     return NULL;
 }
 
-p_tree *parse_pexpr(tokenizer *tz, int min_b, arena *a) {
+p_tree *parse_pexpr(tokenizer *tz, int min_b, fbc_arena *a) {
     if (expect(*tz, TOK_NUM)) {
         token num = {0};
         next_token(tz, &num);
-        p_tree *t = arena_alloc(a, sizeof(p_tree));
+        p_tree *t = fbc_arena_alloc(a, sizeof(p_tree));
         memset(t, 0, sizeof(p_tree));
         t->val = num;
         t->kind = TREE_NUM;
@@ -633,7 +726,7 @@ p_tree *parse_pexpr(tokenizer *tz, int min_b, arena *a) {
                 report_serr(*tz, ERR_UNEXP, NT_EXPER, peek(*tz));
                 return NULL;
             }
-            p_tree *op = arena_alloc(a, sizeof(p_tree));
+            p_tree *op = fbc_arena_alloc(a, sizeof(p_tree));
             op->kind = TREE_UOP;
             op->val = tok_op;
             op->nodes[0] = t;
@@ -641,7 +734,7 @@ p_tree *parse_pexpr(tokenizer *tz, int min_b, arena *a) {
     } else if (expect(*tz, TOK_ID)) {
         token id = {0};
         next_token(tz, &id);     
-        p_tree *lval = arena_alloc(a, sizeof(p_tree));
+        p_tree *lval = fbc_arena_alloc(a, sizeof(p_tree));
         memset(lval, 0, sizeof(p_tree));
         lval->val = id;
         lval->kind = TREE_VAR;
@@ -650,16 +743,16 @@ p_tree *parse_pexpr(tokenizer *tz, int min_b, arena *a) {
             token tok_eq = {0};
             int tok_val = next_token(tz, &tok_eq);
 
-            p_tree *eq = arena_alloc(a, sizeof(p_tree));
+            p_tree *eq = fbc_arena_alloc(a, sizeof(p_tree));
             memset(eq, 0, sizeof(p_tree));
 
-            arena as_arena = arena_init(ASSIGN_ARENA);
+            fbc_arena as_fbc_arena = fbc_arena_init(ASSIGN_ARENA);
             p_tree *rval = NULL;
-            if ((rval = (parse_expr(tz, 0, &as_arena))) == NULL) {
+            if ((rval = (parse_expr(tz, 0, &as_fbc_arena))) == NULL) {
                 report_serr(*tz, ERR_UNEXP, NT_EXPER, peek(*tz));
                 return NULL;
             }
-            eq->as_arena = as_arena;
+            eq->as_fbc_arena = as_fbc_arena;
             eq->nodes[0] = lval;
             eq->nodes[1] = rval;
             if (tok_val == TOK_EQ) {
@@ -677,7 +770,7 @@ p_tree *parse_pexpr(tokenizer *tz, int min_b, arena *a) {
     return NULL;
 }
 
-p_tree *parse_expr(tokenizer *tz, int min_b, arena *a) {
+p_tree *parse_expr(tokenizer *tz, int min_b, fbc_arena *a) {
     p_tree *num1 = NULL;
     int pk = peek(*tz);
     if (pk == TOK_END)
@@ -701,7 +794,7 @@ p_tree *parse_expr(tokenizer *tz, int min_b, arena *a) {
         return num1;
     }
 
-    p_tree *root = arena_alloc(a, sizeof(p_tree));
+    p_tree *root = fbc_arena_alloc(a, sizeof(p_tree));
 
     memcpy(root, num1, sizeof(p_tree));
 
@@ -724,15 +817,16 @@ p_tree *parse_expr(tokenizer *tz, int min_b, arena *a) {
 
         root->nodes[0] = num1;
         root->nodes[1] = num2;
-        num1 = arena_alloc(a, sizeof(p_tree));
+        num1 = fbc_arena_alloc(a, sizeof(p_tree));
         memcpy(num1, root, sizeof(p_tree));
     }
     return root;
 }
 
-eval_type pe_line(char *line) {
-        memset(p_arena.ptr, 0, p_arena.capacity);
-        err = 0;
+eval_type fbc_line(char *line) {
+        fbc_arena_pop(&p_fbc_arena);
+        memset(p_fbc_arena.ptr, 0, p_fbc_arena.capacity);
+        fbc_err = 0;
 
         size_t bytes_read = strlen(line)+1;
         tokenizer tz = {0};
@@ -740,53 +834,30 @@ eval_type pe_line(char *line) {
         tz.len = bytes_read;
 
 
-        p_tree *t = parse_expr(&tz, 0, &p_arena);
+        p_tree *t = parse_expr(&tz, 0, &p_fbc_arena);
 
         if (t == NULL) {
-            arena_pop(&p_arena);
+            fbc_arena_pop(&p_fbc_arena);
             return NULL_LIT;
         }
         if (!expect(tz, TOK_END)) {
-            arena_pop(&p_arena);
+            fbc_arena_pop(&p_fbc_arena);
             report_serr(tz, ERR_UNEXP, TOK_END, peek(tz));
             return NULL_LIT;
         }
 
         eval_type val = eval(t, &gvar_table);
-        arena_pop(&p_arena);
+        fbc_arena_pop(&p_fbc_arena);
         return val;
 }
 
-void eval_file(char *fn) {
-    FILE *f = fopen(fn, "r");
-    xassert(f, "Cannot open file!\n%s: %s\n", fn, strerror(errno));
-    size_t bcap = 1028;
-    char *buff = malloc(bcap);
-    xassert(buff, "Cannot allocate buffer for reading file\n");
-    memset(buff, 0, bcap);
-    while (fgets(buff, bcap, f)) {
-        pe_line(buff);
-        memset(buff, 0, bcap);
-    }
-    fclose(f);
-}
-
-int main(void) {
-    p_arena = arena_init(ARENA_CAP);   // Parse arena. Wiped each iteration.
-    lit_arena = arena_init(ARENA_CAP); // Arena for string literals, like the names of variables.
-    lambda_arena = arena_init(ARENA_CAP);
-
+void fbc_init(void) {
+    p_fbc_arena = fbc_arena_init(ARENA_CAP);   // Parse fbc_arena. Wiped each iteration.
+    lit_fbc_arena = fbc_arena_init(ARENA_CAP); // Arena for string literals, like the names of variables.
+    lambda_fbc_arena = fbc_arena_init(ARENA_CAP);
     srand(time(NULL));
-    eval_file("std.fbc");
-
-    for (;;) {
-        char *buff = readline(prompt);
-        if (buff == NULL) /* C-d EOF */
-            exit(0);
-        
-        eval_type val = pe_line(buff);
-        if (val.type == T_NUM)
-            printf("%.*f\n", val.perc, val.num);
-    }
-    return 0;
 }
+
+#   endif // FBC_IMPLEMENTATION
+#endif // FBC_H_
+
