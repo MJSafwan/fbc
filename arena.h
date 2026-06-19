@@ -71,6 +71,7 @@ int arena_ref(arena *s) {
 }
 
 int arena_unref(arena *s) {
+    xassert(s->ref > 0, "Arena wasn't referenced!\n");
     if (--s->ref == 0) {
         arena_destroy(s);
     }
