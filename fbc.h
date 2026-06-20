@@ -97,7 +97,6 @@ typedef struct {
     uint64_t offset;
     uint64_t mark;
     uint64_t capacity;
-    int ref;
     int free;
 } fbc_arena;
 
@@ -108,6 +107,7 @@ typedef struct {
     union {
         struct {
             double num;
+            /* todo: calculate percision well */
             int perc;
         };
         char *name;
@@ -202,8 +202,6 @@ char *fbc_get_error(fbc_ctx *ctx) {
 
 
 fbc_arena fbc_arena_init(uint64_t capacity);
-int fbc_arena_ref(fbc_arena *s);
-int fbc_arena_unref(fbc_arena *s);
 void *fbc_arena_alloc(fbc_arena *s, uint64_t size);
 void fbc_arena_set_frame(fbc_arena *s);
 void fbc_arena_pop(fbc_arena *s);
@@ -246,21 +244,10 @@ void fbc_arena_pop(fbc_arena *s) {
     s->mark = old_fp;
 }
 
-int fbc_arena_ref(fbc_arena *s) {
-    return ++s->ref;
-}
-
-int fbc_arena_unref(fbc_arena *s) {
-    xassert(s->ref > 0, "Arena wasn't referenced!\n");
-    if (--s->ref == 0) {
-        fbc_arena_destroy(s);
-    }
-    return s->ref;
-}
-
 void fbc_arena_destroy(fbc_arena *s) {
-    xassert(s->free == 0, "Trying to free a non-free fbc_arena!\n");
-    free(s->ptr);
+    xassert(s->free == 0, "Trying to free a free arena!\n");
+    if (s->free == 0)
+        free(s->ptr);
     s->free = 1;
 }
 
@@ -430,9 +417,6 @@ eval_type assign(p_tree *root, var_table *table, int define, fbc_ctx *ctx) {
         if (define == 0) {
             table->items[exists].val = eval(val, table, ctx);
         } else {
-            /* Auto ref counting for bound symbols */
-            fbc_arena_unref(&table->items[exists].val.as_fbc_arena);
-            fbc_arena_ref(&root->as_fbc_arena);
             table->items[exists].val.as_fbc_arena = root->as_fbc_arena;
             table->items[exists].val.lambda = val;
             table->items[exists].val.type = T_LAMBDA;
@@ -449,7 +433,6 @@ eval_type assign(p_tree *root, var_table *table, int define, fbc_ctx *ctx) {
     if (define == 0) {
         table->items[table->count].val = eval(val, table, ctx);
     } else {
-        fbc_arena_ref(&root->as_fbc_arena);
         table->items[table->count].val.lambda = val;
         table->items[table->count].val.as_fbc_arena = root->as_fbc_arena;
         table->items[table->count].val.type = T_LAMBDA;
@@ -584,40 +567,28 @@ int eval_builtin(char *name, var_table *table, eval_type *ret, fbc_ctx *ctx) {
 }
 
 eval_type eval_func(p_tree *root, var_table *table, fbc_ctx *ctx) {
-
-    fbc_arena_set_frame(&ctx->lambda_fbc_arena);
-
-    var_table *table_cpy = fbc_arena_alloc(&ctx->lambda_fbc_arena, sizeof(var_table));
-    memcpy(table_cpy, table, sizeof(var_table));
-    table_cpy->items = fbc_arena_alloc(&ctx->lambda_fbc_arena, table->capacity * sizeof(var_entry));
-    memcpy(table_cpy->items, table->items, table->capacity * sizeof(var_entry));
+    var_table table_cpy = {0};
+    memcpy(&table_cpy, table, sizeof(var_table));
+    table_cpy.items = malloc(table->capacity * sizeof(var_entry));
+    memcpy(table_cpy.items, table->items, table->capacity * sizeof(var_entry));
 
     char *name = NULL;
     if (root->lambda->val.kind == TOK_ID)
         name = root->lambda->val.name;
 
     p_tree *argv = root->nodes[0];
-    fbc_arena *as_fbc_arena = &argv->as_fbc_arena;
-    if (argv != NULL) {
-        if (argv->kind == TREE_DEFINE) {
-            fbc_arena_ref(as_fbc_arena);
-        }
-        eval(argv, table_cpy, ctx);
-    }
+
+    if (argv != NULL)
+        eval(argv, &table_cpy, ctx);
 
     eval_type t = NULL_LIT;
 
-    if (!eval_builtin(name, table_cpy, &t, ctx))
-        t = eval(root->lambda, table_cpy, ctx);
+    if (!eval_builtin(name, &table_cpy, &t, ctx))
+        t = eval(root->lambda, &table_cpy, ctx);
 
-    if (argv != NULL) {
-        if (argv->kind == TREE_DEFINE) {
-            fbc_arena_unref(as_fbc_arena);
-        }
-        eval(argv, table_cpy, ctx);
-    }
-
-    fbc_arena_pop(&ctx->lambda_fbc_arena);
+    free(table_cpy.items);
+    /* Todo: memory management */
+    //fbc_arena_destroy(&argv->as_fbc_arena);
     return t;
 }
 
@@ -725,7 +696,7 @@ p_tree *parse_pexpr(tokenizer *tz, int min_b, fbc_arena *a, fbc_ctx *ctx) {
             token tok_eq = {0};
             int tok_val = next_token(tz, &tok_eq, ctx);
 
-            p_tree *eq = fbc_arena_alloc(a, sizeof(p_tree));
+            p_tree *eq = fbc_arena_alloc(&ctx->lit_fbc_arena, sizeof(p_tree));
             memset(eq, 0, sizeof(p_tree));
 
             fbc_arena as_fbc_arena = fbc_arena_init(ASSIGN_ARENA);
@@ -879,12 +850,14 @@ void fbc_uninit(fbc_ctx *ctx) {
     fbc_arena_destroy(&ctx->p_fbc_arena);
     fbc_arena_destroy(&ctx->lit_fbc_arena);
     fbc_arena_destroy(&ctx->lambda_fbc_arena);
+
     for (size_t i = 0; i < ctx->gvar_table.count; ++i) {
         eval_type entry = ctx->gvar_table.items[i].val;
         if (entry.type == T_LAMBDA) {
             fbc_arena_destroy(&entry.as_fbc_arena);
         }
     }
+
     if (ctx->gvar_table.count > 0)
         free(ctx->gvar_table.items);
 }

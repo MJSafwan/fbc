@@ -4,6 +4,10 @@ This is a functional basic calculator implemented as a single header library.
 
 Note: This was made for educational and recreational purposes. Please do not use this in any serious project.
 
+# TODO
+
+Right now, I am working on a better memory management system.
+
 # Usage
 
 To use this library, include "fbc.h" and define FBC_IMPLEMENTATION. For automatic error reporting, also define FBC_PRINT_SERR.
