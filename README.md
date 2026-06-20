@@ -10,12 +10,21 @@ To use this library, include "fbc.h" and define FBC_IMPLEMENTATION. For automati
 
 Then, you must call fbc_init to initialize the library. This function has the following signiture:
 ```C
-void fbc_init(void);
+fbc_ctx fbc_init(void);
 ```
+
+fbc_ctx is the current initialized context.
 
 After that, you can call the fbc_line function and supply the line to be interpreted. This function has the following signiture:
 ```C
-eval_type fbc_line(char *line);
+eval_type fbc_line(char *line, fbc_ctx *ctx);
+```
+
+The ctx is the context you got from the fbc_init.
+
+After finishing up your work, make sure to call fbc_uninit to free up the context. This has the following signiture:
+```C
+void fbc_uninit(fbc_ctx *ctx);
 ```
 
 The eval_type return type is defined as follows:
@@ -51,7 +60,7 @@ T_NUM, which is a number with 'num' and 'perc' fields avalable for the number an
 
 T_LAMBDA is an expressin with free variables that is yet to be evaluated. More on this type later.
 
-You can chech errors by calling fbc_did_error, which returns non-zero if an error happened. Then, to get the error message, you can call the fbc_get_error, which returns a temporary string owned by the library containing the error message. However, the fbc_get_error will return NULL if the macro FBC_PRINT_SERR is defined, in which case an error will automaticly be printed.
+You can chech errors by calling fbc_did_error and pass a pointer to the context as an argument, which returns non-zero if an error happened. Then, to get the error message, you can call the fbc_get_error on the context, which returns a temporary string owned by the library containing the error message. However, the fbc_get_error will return NULL if the macro FBC_PRINT_SERR is defined, in which case an error will automaticly be printed.
 
 # Build the REPL
 
